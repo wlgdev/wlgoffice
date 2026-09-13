@@ -1,0 +1,23 @@
+{
+  "name": "vod-dl",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "^1.4.0"
+  },
+  "scripts": {
+    "start": "bun --env-file=.env.development src/main.ts",
+    "build:windows": "bun build --env-file=.env --env=inline --compile --target=bun-windows-x64 ./src/main.ts --outfile dist/wlgofficebot.exe",
+    "build:linux": "bun build --env-file=.env --env=inline --compile --target=bun-linux-x64 ./src/main.ts --outfile dist/wlgofficebot",
+    "upload": "bun build:linux && bun E:/deploy.ts ./dist/wlgofficebot /opt/bots/wlgoffice/wlgofficebot wlgoffice"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@mtcute/bun": "^0.32.0",
+    "@mtcute/dispatcher": "^0.32.0",
+    "@shevernitskiy/scraperator": "npm:@jsr/shevernitskiy__scraperator@^0.0.134"
+  }
+}
