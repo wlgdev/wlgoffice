@@ -62,6 +62,17 @@ async function safeDeleteFile(filePath: string) {
   }
 }
 
+async function safeDeleteStatus(chatId: number | string, messageId: number) {
+  try {
+    await tg.deleteMessagesById(chatId, [messageId]);
+  } catch (e: any) {
+    const errorStr = String(e?.message || e);
+    if (!errorStr.includes("MESSAGE_ID_INVALID") && !errorStr.includes("MESSAGE_DELETE_FORBIDDEN")) {
+      logger.warn("[Telegram Delete Error]:", errorStr);
+    }
+  }
+}
+
 async function safeUpdateStatus(chatId: number | string, messageId: number, rawText: string) {
   try {
     await tg.editMessage({
@@ -103,24 +114,30 @@ function buildCaption(params: {
   muteStats: MuteStats;
   remux: FfmpegRunResult;
   vodId: string;
+  vodUrl: string;
+  index: number;
+  total: number;
 }): string {
-  const { range, hls, muteStats, remux, vodId } = params;
+  const { range, hls, muteStats, remux, vodId, vodUrl, index, total } = params;
+
+  // Нумерацию «i/N» показываем в мультизадачах (>1 клипа), одиночный клип — без неё
+  const clipTitle = total > 1 ? `🎬 <b>Клип ${index}/${total} [${range.rawStart} - ${range.rawEnd}]</b>` : `🎬 <b>Клип [${range.rawStart} - ${range.rawEnd}]</b>`;
 
   let muteLine = "";
   if (muteStats.mutedFound > 0) {
     const isFullUnmute = muteStats.unmutedSuccess === muteStats.mutedFound;
-    const icon = isFullUnmute ? "✓" : "⚠️";
+    const icon = isFullUnmute ? "✅" : "⚠️";
     muteLine = `\n🔊 <b>Звук:</b> размьючено ${muteStats.unmutedSuccess}/${muteStats.mutedFound} ${icon}`;
   } else {
-    muteLine = "\n🔊 <b>Звук:</b> чистый (без мьютов) ✓";
+    muteLine = "\n🔊 <b>Звук:</b> чистый (без мьютов) ✅";
   }
 
   return (
-    `🎬 <b>Клип [${range.rawStart} - ${range.rawEnd}]</b> (длительность: ${remux.duration}с)\n` +
+    `${clipTitle} (длительность: ${remux.duration}с)\n` +
     `📺 <b>Качество:</b> ${hls.variant.quality} (${hls.variant.width}x${hls.variant.height} @ ${hls.variant.framerate}fps)\n` +
     `📦 <b>Размер:</b> ${remux.sizeMB} MB (~${remux.bitrateKbps} kbps)${muteLine}\n` +
     `⚡ <b>Время обработки:</b> ${(remux.elapsedMs / 1000).toFixed(1)}с\n` +
-    `🔗 <b>VOD:</b> <code>${vodId}</code>`
+    `🔗 <b>VOD:</b> <a href="${vodUrl}">${vodId}</a>`
   );
 }
 
@@ -193,6 +210,8 @@ dp.onNewMessage(async (msg) => {
     }
 
     const totalRanges = parsedVod.ranges.length;
+    // Оригинальная ссылка из поста юзера (сохраняет www/m), фолбэк — канонический URL по ID
+    const vodUrl = parsedVod.vodUrl ?? `https://www.twitch.tv/videos/${parsedVod.vodId}`;
     const channelName = "welovegames";
     const requestedQualities = parsedVod.qualities;
     const qualityLine =
@@ -325,6 +344,9 @@ dp.onNewMessage(async (msg) => {
           muteStats,
           remux: remuxResult,
           vodId: parsedVod.vodId,
+          vodUrl,
+          index: currentIndex,
+          total: totalRanges,
         });
 
         await tg.sendMedia(
@@ -373,21 +395,24 @@ dp.onNewMessage(async (msg) => {
       }
     }
 
-    // 4. Формирование финального отчета
-    let finalHeader =
-      successCount === totalRanges
-        ? `🎉 <b>Все клипы успешно созданы и отправлены!</b> (${successCount}/${totalRanges})`
-        : `⚠️ <b>Обработка завершена</b> (Успешно: ${successCount} из ${totalRanges})`;
+    // 4. Финал: всё ок — статусный пост удаляем, чтобы не мусорить в канале.
+    // Оставляем его только если есть ошибки — там вся диагностика.
+    if (successCount === totalRanges) {
+      await safeDeleteStatus(chatId, statusMsgId);
+      return;
+    }
+
+    let finalHeader = `⚠️ <b>Обработка завершена</b> (Успешно: ${successCount} из ${totalRanges})`;
 
     if (successCount > 0) {
       finalHeader += `\n📊 <b>Итог:</b> ${totalDurationSec}с видео · ${totalSizeMB.toFixed(2)} MB`;
 
       if (totalMutedSegments > 0) {
         const percent = Math.round((totalUnmutedSegments / totalMutedSegments) * 100);
-        const icon = totalFailedUnmutedSegments === 0 ? "✓" : "⚠️";
+        const icon = totalFailedUnmutedSegments === 0 ? "✅" : "⚠️";
         finalHeader += `\n🔊 <b>Восстановление звука:</b> ${totalUnmutedSegments}/${totalMutedSegments} сегментов (${percent}%) ${icon}`;
       } else {
-        finalHeader += `\n🔊 <b>Звук:</b> замученных сегментов не обнаружено ✓`;
+        finalHeader += `\n🔊 <b>Звук:</b> замьюченных сегментов не обнаружено ✅`;
       }
     }
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import config, { parseChatIds } from "./config";
-import { parseQualities, parseVodId, parseVodMessage, parseTimeRanges, timeToSeconds } from "./utils";
+import { parseQualities, parseVodId, parseVodMessage, parseVodUrl, parseTimeRanges, timeToSeconds } from "./utils";
 import {
   parseMediaPlaylist,
   filterSegmentsByRange,
@@ -32,6 +32,16 @@ describe("utils (trust boundary: текст из Telegram)", () => {
   test("parseVodId", () => {
     expect(parseVodId("!клип https://www.twitch.tv/videos/123456 10:00 - 12:30")).toBe("123456");
     expect(parseVodId("без ссылки")).toBeNull();
+  });
+  test("parseVodUrl (оригинальная ссылка из поста, протокол нормализуем к https)", () => {
+    expect(parseVodUrl("!клип https://www.twitch.tv/videos/123456 10:00 - 12:30")).toBe(
+      "https://www.twitch.tv/videos/123456",
+    );
+    expect(parseVodUrl("!клип http://m.twitch.tv/videos/123456 10:00 - 12:30")).toBe(
+      "https://m.twitch.tv/videos/123456",
+    );
+    expect(parseVodUrl("!клип twitch.tv/videos/123456 10:00 - 12:30")).toBe("https://twitch.tv/videos/123456");
+    expect(parseVodUrl("без ссылки")).toBeNull();
   });
   test("parseTimeRanges", () => {
     const r = parseTimeRanges("10:00 - 12:30");

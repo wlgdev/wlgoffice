@@ -148,8 +148,21 @@ export function parseAllVodIds(text: string): string[] {
 
 export interface ParsedVodMessage {
   vodId: string | null;
+  vodUrl: string | null;
   ranges: ParsedTimeRange[];
   qualities: string[];
+}
+
+/**
+ * Извлекает оригинальную ссылку на VOD из текста (сохраняем www/m subdomain как прислал юзер).
+ * Возвращает null, если ссылки нет. Протокол нормализуем к https:// для кликабельного href.
+ */
+export function parseVodUrl(text: string): string | null {
+  const match = /(?:https?:\/\/)?((?:www\.|m\.)?twitch\.tv\/videos\/(\d+))/i.exec(text);
+  if (!match || match[1] === undefined) {
+    return null;
+  }
+  return `https://${match[1]}`;
 }
 
 /**
@@ -180,6 +193,7 @@ export function parseQualities(text: string): string[] {
 export function parseVodMessage(text: string): ParsedVodMessage {
   return {
     vodId: parseVodId(text),
+    vodUrl: parseVodUrl(text),
     ranges: parseTimeRanges(text),
     qualities: parseQualities(text),
   };
