@@ -141,14 +141,28 @@ export async function remuxHlsStream(options: RemuxToFileOptions): Promise<Ffmpe
   args.push("-hide_banner");
   args.push("-loglevel", verbose ? "info" : "error");
 
-  args.push("-fflags", "+genpts+igndts");
+  args.push("-fflags", "+genpts+igndts+discardcorrupt");
   args.push("-avoid_negative_ts", "make_zero");
 
   if (trimStart > 0) args.push("-ss", String(trimStart));
   args.push("-i", tmpIn);
   if (trimDuration > 0) args.push("-t", String(trimDuration));
 
-  args.push("-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart", outPath);
+  args.push(
+    "-c",
+    "copy",
+    "-bsf:a",
+    "aac_adtstoasc",
+    "-bsf",
+    "setts=PTS-STARTPTS;DTS-STARTDTS",
+    "-muxpreload",
+    "0",
+    "-muxdelay",
+    "0",
+    "-movflags",
+    "+faststart",
+    outPath,
+  );
 
   logger.info(`Spawning FFmpeg (${ffmpegBin}) -> File: ${outPath}...`);
 
