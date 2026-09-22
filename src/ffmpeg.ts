@@ -154,7 +154,7 @@ export async function remuxHlsStream(options: RemuxToFileOptions): Promise<Ffmpe
     "-bsf:a",
     "aac_adtstoasc",
     "-bsf",
-    "setts=PTS-STARTPTS;DTS-STARTDTS",
+    "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS",
     "-muxpreload",
     "0",
     "-muxdelay",
