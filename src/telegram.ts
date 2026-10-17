@@ -2,6 +2,7 @@ import { TelegramClient, InputMedia, html } from "@mtcute/bun";
 import { Dispatcher, type MessageContext } from "@mtcute/dispatcher";
 import { parseVodMessage } from "./utils";
 import { getVodHlsStream, QualityNotFoundError, type HlsStreamResult, type MuteStats } from "./hls";
+import { getVkHlsStream } from "./vk";
 import { remuxHlsStream, type FfmpegRunResult } from "./ffmpeg";
 import { existsSync } from "node:fs";
 import config from "./config";
@@ -18,8 +19,8 @@ process.on("uncaughtException", (err) => {
 });
 
 // Лимиты
-const MAX_DURATION_SECONDS = 30 * 60; // 30 минут
-const MAX_FILE_SIZE_BYTES = 4 * 1024 * 1024 * 1024; // 4 ГБ
+const MAX_DURATION_SECONDS = 60 * 60; // 60 минут
+const MAX_FILE_SIZE_BYTES = 3.5 * 1024 * 1024 * 1024; // 3.5 ГБ
 
 const tg = new TelegramClient({
   apiId: config.telegram.appId,
@@ -196,8 +197,11 @@ dp.onNewMessage(async (msg) => {
       return;
     }
 
-    if (!parsedVod.vodId) {
-      await answerText(msg, toTelegramHtml("❌ <b>Ошибка:</b> не удалось извлечь VOD ID из ссылки."));
+    if (!parsedVod.platform || !parsedVod.vodId) {
+      await answerText(
+        msg,
+        toTelegramHtml("❌ <b>Ошибка:</b> не удалось распознать ссылку (Twitch VOD или VK Видео)."),
+      );
       return;
     }
 
@@ -209,20 +213,45 @@ dp.onNewMessage(async (msg) => {
       return;
     }
 
+    const isVk = parsedVod.platform === "vk";
+    const vodId = parsedVod.vodId;
     const totalRanges = parsedVod.ranges.length;
-    // Оригинальная ссылка из поста юзера (сохраняет www/m), фолбэк — канонический URL по ID
-    const vodUrl = parsedVod.vodUrl ?? `https://www.twitch.tv/videos/${parsedVod.vodId}`;
     const channelName = "welovegames";
+    // Оригинальная ссылка из поста юзера, фолбэк — канонический URL по ID
+    const vodUrl = parsedVod.vodUrl ?? (isVk ? `https://vkvideo.ru/video${vodId}` : `https://www.twitch.tv/videos/${vodId}`);
     const requestedQualities = parsedVod.qualities;
     const qualityLine =
       requestedQualities.length > 0
         ? `🎯 Качество: <b>${requestedQualities.join(", ")}</b>\n`
         : `🎯 Качество: <b>максимальное</b>\n`;
 
+    const fetchStream = (start: number, end: number) =>
+      isVk
+        ? getVkHlsStream({
+            videoId: vodId,
+            start,
+            end,
+            quality: requestedQualities.length > 0 ? requestedQualities : undefined,
+            proxy: config.proxy,
+          })
+        : getVodHlsStream({
+            channel: channelName,
+            vodId,
+            start,
+            end,
+            quality: requestedQualities.length > 0 ? requestedQualities : undefined,
+            oauth: config.twitch.oauth,
+            proxy: config.proxy,
+          });
+
     // 2. Отправка начального статусного сообщения
+    const sourceLine = isVk
+      ? `🌐 Источник: <b>VK Видео</b> | Видео: <code>${vodId}</code>\n`
+      : `📺 Канал: <b>${channelName}</b> | VOD: <code>${vodId}</code>\n`;
+
     const initialText =
       `📥 <b>Запрос принят!</b>\n` +
-      `📺 Канал: <b>${channelName}</b> | VOD: <code>${parsedVod.vodId}</code>\n` +
+      sourceLine +
       qualityLine +
       `⏱ Клипов в очереди: <b>${totalRanges}</b>\n\n` +
       parsedVod.ranges
@@ -293,15 +322,7 @@ dp.onNewMessage(async (msg) => {
           `🔄 [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — получение HLS...`;
         await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
 
-        const hlsStream = await getVodHlsStream({
-          channel: channelName,
-          vodId: parsedVod.vodId,
-          start: range.startSeconds,
-          end: range.endSeconds,
-          quality: requestedQualities.length > 0 ? requestedQualities : undefined,
-          oauth: config.twitch.oauth,
-          proxy: config.proxy,
-        });
+        const hlsStream = await fetchStream(range.startSeconds, range.endSeconds);
 
         // Этап 2: Ремуксинг
         statuses[i] =

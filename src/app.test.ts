@@ -1,14 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import config, { parseChatIds } from "./config";
-import { parseQualities, parseVodId, parseVodMessage, parseVodUrl, parseTimeRanges, timeToSeconds } from "./utils";
+import {
+  parseQualities,
+  parseVodId,
+  parseVodMessage,
+  parseVodUrl,
+  parseTimeRanges,
+  parseVkVideoId,
+  timeToSeconds,
+} from "./utils";
 import {
   parseMediaPlaylist,
   filterSegmentsByRange,
   pickVariant,
   QualityNotFoundError,
   variantMatchesQuality,
+  type StreamVariant,
 } from "./hls";
-import type { TwtichHLSSourceFormat } from "@shevernitskiy/scraperator";
+import { parseVkMasterPlaylist } from "./vk";
 import { remuxHlsStream } from "./ffmpeg";
 
 describe("parseChatIds", () => {
@@ -48,6 +57,34 @@ describe("utils (trust boundary: текст из Telegram)", () => {
     expect(r).toHaveLength(1);
     expect([r[0]!.startSeconds, r[0]!.endSeconds]).toEqual([600, 750]);
   });
+  test("parseVkVideoId", () => {
+    expect(parseVkVideoId("!клип https://vkvideo.ru/video-46211765_456252477 10:00 - 12:30")).toBe(
+      "-46211765_456252477",
+    );
+    expect(parseVkVideoId("!клип https://vkvideo.ru/live-46211765_456252477 10:00 - 12:30")).toBe(
+      "-46211765_456252477",
+    );
+    expect(parseVkVideoId("!клип https://vk.com/clip-46211765_456252477 10:00 - 12:30")).toBe(
+      "-46211765_456252477",
+    );
+    // без минуса у owner_id — нормализуем, иначе Vk.getVideoByID бросит "Invalid video id"
+    expect(parseVkVideoId("https://vkvideo.ru/video46211765_456252477")).toBe("-46211765_456252477");
+    expect(parseVkVideoId("!клип https://www.twitch.tv/videos/123456 10:00 - 12:30")).toBeNull();
+  });
+  test("parseVodMessage определяет платформу", () => {
+    const vk = parseVodMessage("!клип https://vkvideo.ru/video-46211765_456252477 10:00 - 12:30 720p");
+    expect(vk.platform).toBe("vk");
+    expect(vk.vodId).toBe("-46211765_456252477");
+    expect(vk.vodUrl).toBe("https://vkvideo.ru/video-46211765_456252477");
+    expect(vk.ranges).toHaveLength(1);
+    expect(vk.qualities).toEqual(["720p"]);
+
+    const twitch = parseVodMessage("!клип https://twitch.tv/videos/123 10:00 - 12:30");
+    expect(twitch.platform).toBe("twitch");
+    expect(twitch.vodId).toBe("123");
+
+    expect(parseVodMessage("!клип просто текст").platform).toBeNull();
+  });
 });
 
 describe("ffmpeg (битый вход обязан падать, а не 'сохранять' 0 MB)", () => {
@@ -83,7 +120,7 @@ describe("parseQualities (цель: паттерн <цифры>p)", () => {
 });
 
 describe("pickVariant (точный матч, без фолбэка на максимальное)", () => {
-  const variants: TwtichHLSSourceFormat[] = [
+  const variants: StreamVariant[] = [
     { bandwidth: 9000, codecs: "avc", resolution: "1920x1080", video: "1080p60", framerate: "60", url: "u1" },
     { bandwidth: 5000, codecs: "avc", resolution: "1280x720", video: "720p60", framerate: "60", url: "u2" },
     { bandwidth: 2000, codecs: "avc", resolution: "852x480", video: "480p30", framerate: "30", url: "u3" },
@@ -142,5 +179,34 @@ describe("hls playlist", () => {
     const { segments } = parseMediaPlaylist(text, "https://example.com/vod/");
     expect(segments).toHaveLength(3);
     expect(filterSegmentsByRange(segments, 5, 15)).toHaveLength(2);
+  });
+});
+
+describe("parseVkMasterPlaylist (реальный формат VK: относительные URL, произвольный порядок параметров)", () => {
+  const master = `https://vkvd.okcdn.ru/srcIp/1.2.3.4/pr/71/x.m3u8`;
+  const playlist = [
+    "#EXTM3U",
+    '#EXT-X-STREAM-INF:QUALITY=mobile,BANDWIDTH=212992,RESOLUTION=256x144,FRAME-RATE=60.000,CODECS="avc1.42001e,mp4a.40.2"',
+    "mob/track.m3u8",
+    "#EXT-X-STREAM-INF:QUALITY=fullhd,BANDWIDTH=5063647,RESOLUTION=1920x1080,FRAME-RATE=60.000,CODECS=",
+    "fhd/track.m3u8",
+  ].join("\n");
+
+  test("парсит варианты и склеивает URL с базой", () => {
+    const variants = parseVkMasterPlaylist(playlist, master);
+    expect(variants).toHaveLength(2);
+    expect(variants[0]!.url).toBe("https://vkvd.okcdn.ru/srcIp/1.2.3.4/pr/71/mob/track.m3u8");
+    expect(variants[1]!.bandwidth).toBe(5063647);
+    expect(variants[1]!.video).toBe("1080p60");
+  });
+
+  test("выбор качества общий с Twitch", () => {
+    const variants = parseVkMasterPlaylist(playlist, master);
+    expect(pickVariant(variants).video).toBe("1080p60");
+    expect(pickVariant(variants, "144p").video).toBe("144p60");
+  });
+
+  test("пустой манифест — пустой список", () => {
+    expect(parseVkMasterPlaylist("#EXTM3U", master)).toHaveLength(0);
   });
 });

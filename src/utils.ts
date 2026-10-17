@@ -146,7 +146,55 @@ export function parseAllVodIds(text: string): string[] {
   return ids;
 }
 
+/**
+ * Платформа источника видео.
+ */
+export type VodPlatform = "twitch" | "vk";
+
+const VK_LINK_REGEX =
+  /(?:https?:\/\/)?(?:www\.|m\.)?(?:vkvideo\.ru|vk\.com|vk\.ru)\/(?:video|live|clips?)?(-?\d+)_(\d+)/i;
+
+/**
+ * Извлекает ID видео VK из текста.
+ * Поддерживает vkvideo.ru/video<owner>_<id>, vkvideo.ru/live<owner>_<id>, vk.com/clip<owner>_<id>.
+ * owner_id нормализуется к виду с ведущим минусом — этого требует Vk.getVideoByID.
+ *
+ * @param text Исходный текст со ссылкой
+ * @returns ID вида "-46211765_456252477" или null
+ */
+export function parseVkVideoId(text: string): string | null {
+  const match = VK_LINK_REGEX.exec(text);
+
+  if (!match) {
+    return null;
+  }
+
+  const ownerId = match[1];
+  const videoId = match[2];
+
+  if (!ownerId || !videoId) {
+    return null;
+  }
+
+  return `${ownerId.startsWith("-") ? ownerId : `-${ownerId}`}_${videoId}`;
+}
+
+/**
+ * Извлекает оригинальную ссылку на видео VK (для подписи к клипу).
+ */
+export function parseVkUrl(text: string): string | null {
+  const match = VK_LINK_REGEX.exec(text);
+  if (!match) {
+    return null;
+  }
+
+  const index = match.index;
+  const raw = text.slice(index, index + match[0].length);
+  return raw.startsWith("http") ? raw : `https://${raw}`;
+}
+
 export interface ParsedVodMessage {
+  platform: VodPlatform | null;
   vodId: string | null;
   vodUrl: string | null;
   ranges: ParsedTimeRange[];
@@ -191,8 +239,23 @@ export function parseQualities(text: string): string[] {
 }
 
 export function parseVodMessage(text: string): ParsedVodMessage {
+  const vkId = parseVkVideoId(text);
+
+  if (vkId) {
+    return {
+      platform: "vk",
+      vodId: vkId,
+      vodUrl: parseVkUrl(text),
+      ranges: parseTimeRanges(text),
+      qualities: parseQualities(text),
+    };
+  }
+
+  const twitchId = parseVodId(text);
+
   return {
-    vodId: parseVodId(text),
+    platform: twitchId ? "twitch" : null,
+    vodId: twitchId,
     vodUrl: parseVodUrl(text),
     ranges: parseTimeRanges(text),
     qualities: parseQualities(text),

@@ -64,10 +64,20 @@ export interface MuteStats {
   remainedMuted: number;
 }
 
+/** Платформенно-независимое описание варианта качества из master-манифеста. */
+export interface StreamVariant {
+  bandwidth: number;
+  resolution: string;
+  video: string;
+  framerate: string;
+  codecs: string;
+  url: string;
+}
+
 export interface HlsStreamResult {
   stream: ReadableStream<Uint8Array>;
   variant: VariantInfo;
-  rawVariant: TwtichHLSSourceFormat;
+  rawVariant: StreamVariant;
   trimStart: number;
   trimDuration: number;
   totalSegments: number;
@@ -86,7 +96,18 @@ interface SegmentDownloadResult {
 
 // ─── Helpers ─────────────────────────────────────────────────
 
-export function parseVariantInfo(v: TwtichHLSSourceFormat): VariantInfo {
+export function fromTwitchVariant(v: TwtichHLSSourceFormat): StreamVariant {
+  return {
+    bandwidth: v.bandwidth,
+    resolution: v.resolution ?? "",
+    video: v.video ?? "",
+    framerate: v.framerate ?? "",
+    codecs: v.codecs ?? "",
+    url: v.url,
+  };
+}
+
+export function parseVariantInfo(v: StreamVariant): VariantInfo {
   const [wStr, hStr] = (v.resolution || "").split("x");
   const [vCodec, aCodec] = (v.codecs || "").split(",");
 
@@ -109,7 +130,7 @@ export function parseVariantInfo(v: TwtichHLSSourceFormat): VariantInfo {
  * Проверяет, соответствует ли вариант манифеста запрошенному качеству.
  * "720p" матчится на "720p", "720p60" (высота + fps), либо на resolution "1280x720".
  */
-export function variantMatchesQuality(v: TwtichHLSSourceFormat, quality: string): boolean {
+export function variantMatchesQuality(v: StreamVariant, quality: string): boolean {
   const q = quality.toLowerCase();
 
   const video = v.video?.toLowerCase() ?? "";
@@ -131,7 +152,7 @@ export function variantMatchesQuality(v: TwtichHLSSourceFormat, quality: string)
   return false;
 }
 
-export function pickVariant(variants: TwtichHLSSourceFormat[], quality?: string | string[]): TwtichHLSSourceFormat {
+export function pickVariant(variants: StreamVariant[], quality?: string | string[]): StreamVariant {
   const sorted = [...variants].sort((a, b) => b.bandwidth - a.bandwidth);
   const bestVariant = sorted[0];
 
@@ -336,21 +357,26 @@ function createOrderedSegmentStream(
 
 // ─── Main Export ─────────────────────────────────────────────
 
-export async function getVodHlsStream(options: HlsClipOptions): Promise<HlsStreamResult> {
-  const { channel, vodId, start, end, quality, concurrency = 6 } = options;
+export interface StreamFromVariantsOptions {
+  start: number;
+  end: number;
+  quality?: string | string[];
+  concurrency?: number;
+}
+
+/**
+ * Платформенно-независимое ядро: по списку вариантов качества строит поток
+ * только нужного диапазона сегментов. Используется и Twitch, и VK.
+ */
+export async function streamFromVariants(
+  rawVariants: StreamVariant[],
+  options: StreamFromVariantsOptions,
+): Promise<HlsStreamResult> {
+  const { start, end, quality, concurrency = 6 } = options;
 
   if (start < 0 || end <= start) {
     throw new Error(`Invalid range: start=${start}, end=${end}`);
   }
-
-  logger.info(`Fetching VOD metadata for channel "${channel}", vodId "${vodId}"...`);
-
-  const twitch = new Twitch(channel, {
-    proxy: options.proxy,
-    OAuthToken: options.oauth,
-  });
-
-  const rawVariants = await twitch.vodHLSMetadata(vodId);
 
   const selectedRawVariant = pickVariant(rawVariants, quality);
   const variant = parseVariantInfo(selectedRawVariant);
@@ -420,4 +446,24 @@ export async function getVodHlsStream(options: HlsClipOptions): Promise<HlsStrea
     },
     muteStats,
   };
+}
+
+export async function getVodHlsStream(options: HlsClipOptions): Promise<HlsStreamResult> {
+  const { channel, vodId, quality } = options;
+
+  logger.info(`Fetching VOD metadata for channel "${channel}", vodId "${vodId}"...`);
+
+  const twitch = new Twitch(channel, {
+    proxy: options.proxy,
+    OAuthToken: options.oauth,
+  });
+
+  const rawVariants = await twitch.vodHLSMetadata(vodId);
+
+  return streamFromVariants(rawVariants.map(fromTwitchVariant), {
+    start: options.start,
+    end: options.end,
+    quality,
+    concurrency: options.concurrency,
+  });
 }
