@@ -7,11 +7,13 @@ import {
   parseVodUrl,
   parseTimeRanges,
   parseVkVideoId,
+  parseVodMode,
   timeToSeconds,
 } from "./utils";
 import {
   parseMediaPlaylist,
   filterSegmentsByRange,
+  isAudioOnlyVariant,
   pickVariant,
   QualityNotFoundError,
   variantMatchesQuality,
@@ -84,6 +86,13 @@ describe("utils (trust boundary: текст из Telegram)", () => {
     expect(twitch.vodId).toBe("123");
 
     expect(parseVodMessage("!клип просто текст").platform).toBeNull();
+  });
+  test("parseVodMode различает !клип и !аудио", () => {
+    expect(parseVodMode("!клип https://twitch.tv/videos/123 10:00 - 11:00")).toBe("video");
+    expect(parseVodMode("!аудио https://twitch.tv/videos/123 10:00 - 11:00")).toBe("audio");
+    expect(parseVodMode("!audio https://twitch.tv/videos/123 10:00 - 11:00")).toBe("audio");
+    expect(parseVodMode("!аудио")).toBe("audio");
+    expect(parseVodMode("!аудиочки шумим")).toBe("video");
   });
 });
 
@@ -170,6 +179,50 @@ describe("pickVariant (точный матч, без фолбэка на мак�
         "720p",
       ),
     ).toBe(true);
+  });
+});
+
+describe("pickVariant audio-only (режим !аудио)", () => {
+  const withAudio: StreamVariant[] = [
+    { bandwidth: 9000, codecs: "avc1.4D0028,mp4a.40.2", resolution: "1920x1080", video: "1080p60", framerate: "60", url: "v1" },
+    { bandwidth: 2000, codecs: "avc1.4D401F,mp4a.40.2", resolution: "852x480", video: "480p30", framerate: "30", url: "v2" },
+    { bandwidth: 160000, codecs: "mp4a.40.2", resolution: "", video: "audio_only", framerate: "", url: "a1" },
+  ];
+  const videoOnly: StreamVariant[] = withAudio.slice(0, 2);
+
+  test("без quality в аудио-режиме — audio_only приоритетнее максимального видео", () => {
+    expect(pickVariant(withAudio, undefined, true).url).toBe("a1");
+  });
+
+  test("isAudioOnlyVariant отличает аудиодорожку от видео", () => {
+    expect(isAudioOnlyVariant(withAudio[2]!)).toBe(true);
+    expect(isAudioOnlyVariant(withAudio[0]!)).toBe(false);
+    // видеокодек без resolution (VK QUALITY=audio с h264) — не audio-only
+    expect(isAudioOnlyVariant({ bandwidth: 1, codecs: "avc1,mp4a", resolution: "", video: "", framerate: "", url: "" })).toBe(
+      false,
+    );
+  });
+
+  test("audio-only вариант есть — берём его, а не максимальное видео", () => {
+    expect(pickVariant(withAudio, undefined, true).url).toBe("a1");
+  });
+
+  test("audio-only варианта нет — фолбэк на максимальный bandwidth (лучший AAC)", () => {
+    expect(pickVariant(videoOnly, undefined, true).url).toBe("v1");
+  });
+
+  test("quality в аудио-режиме выбирает источник звука, приоритетнее audio_only", () => {
+    expect(pickVariant(withAudio, "480p", true).url).toBe("v2");
+    expect(pickVariant(withAudio, ["1080p", "480p"], true).url).toBe("v1");
+  });
+
+  test("quality в аудио-режиме не найдено — фолбэк на audio_only, а не ошибка", () => {
+    expect(pickVariant(withAudio, "2160p", true).url).toBe("a1");
+  });
+
+  test("video-режим на том же манифесте по-прежнему даёт максимальное", () => {
+    expect(pickVariant(withAudio).url).toBe("v1");
+    expect(pickVariant(videoOnly).url).toBe("v1");
   });
 });
 

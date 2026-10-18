@@ -10,6 +10,7 @@ export interface VkClipOptions {
   concurrency?: number;
   proxy?: string;
   accessToken?: string;
+  audioOnly?: boolean;
 }
 
 /**
@@ -62,7 +63,7 @@ export function parseVkMasterPlaylist(playlistText: string, masterUrl: string): 
 }
 
 export async function getVkHlsStream(options: VkClipOptions): Promise<HlsStreamResult> {
-  const { videoId, start, end, quality, concurrency, proxy, accessToken } = options;
+  const { videoId, start, end, quality, concurrency, proxy, accessToken, audioOnly } = options;
 
   if (start < 0 || end <= start) {
     throw new Error(`Invalid range: start=${start}, end=${end}`);
@@ -105,5 +106,6 @@ export async function getVkHlsStream(options: VkClipOptions): Promise<HlsStreamR
     end: Math.min(end, info.duration),
     quality,
     concurrency,
+    audioOnly,
   });
 }

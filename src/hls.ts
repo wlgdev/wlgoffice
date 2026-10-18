@@ -13,6 +13,7 @@ export interface HlsClipOptions {
   concurrency?: number;
   proxy?: string;
   oauth?: string;
+  audioOnly?: boolean;
 }
 
 /**
@@ -152,17 +153,50 @@ export function variantMatchesQuality(v: StreamVariant, quality: string): boolea
   return false;
 }
 
-export function pickVariant(variants: StreamVariant[], quality?: string | string[]): StreamVariant {
-  const sorted = [...variants].sort((a, b) => b.bandwidth - a.bandwidth);
+/**
+ * Вариант без видеодорожки (Twitch "audio_only", VK "QUALITY=audio").
+ */
+export function isAudioOnlyVariant(v: StreamVariant): boolean {
+  return !v.resolution && !/avc|hev|hvc|vp0?9|av01/i.test(v.codecs);
+}
+
+export function pickVariant(
+  variants: StreamVariant[],
+  quality?: string | string[],
+  audioOnly = false,
+): StreamVariant {
+  const requested = (Array.isArray(quality) ? quality : quality ? [quality] : [])
+    .map((q) => q.toLowerCase())
+    .filter(Boolean);
+
+  // В видеорежиме аудиодорожка конкурентом не считается — bandwidth у неё бывает выше.
+  const videoVariants = variants.filter((v) => !isAudioOnlyVariant(v));
+  const pool = videoVariants.length ? videoVariants : variants;
+
+  const sorted = [...pool].sort((a, b) => b.bandwidth - a.bandwidth);
   const bestVariant = sorted[0];
 
   if (!bestVariant) {
     throw new Error("No variants found in HLS manifest");
   }
 
-  const requested = (Array.isArray(quality) ? quality : quality ? [quality] : [])
-    .map((q) => q.toLowerCase())
-    .filter(Boolean);
+  if (audioOnly) {
+    // 1. Явное качество из команды — источник звука именно из него.
+    if (requested.length > 0) {
+      for (const q of requested) {
+        const found = sorted.find((v) => variantMatchesQuality(v, q));
+        if (found) return found;
+      }
+    }
+
+    // 2. Отдельная аудиодорожка — качаем только звук.
+    const audioVariant = variants.find(isAudioOnlyVariant);
+    if (audioVariant) return audioVariant;
+
+    // 3. Ни того, ни другого — максимальный bandwidth: AAC в нём лучше всего,
+    //    видео всё равно выкинет ffmpeg.
+    return bestVariant;
+  }
 
   // Целевое качество не задано — качаем максимальное, как раньше
   if (requested.length === 0) return bestVariant;
@@ -362,6 +396,7 @@ export interface StreamFromVariantsOptions {
   end: number;
   quality?: string | string[];
   concurrency?: number;
+  audioOnly?: boolean;
 }
 
 /**
@@ -372,13 +407,13 @@ export async function streamFromVariants(
   rawVariants: StreamVariant[],
   options: StreamFromVariantsOptions,
 ): Promise<HlsStreamResult> {
-  const { start, end, quality, concurrency = 6 } = options;
+  const { start, end, quality, concurrency = 6, audioOnly = false } = options;
 
   if (start < 0 || end <= start) {
     throw new Error(`Invalid range: start=${start}, end=${end}`);
   }
 
-  const selectedRawVariant = pickVariant(rawVariants, quality);
+  const selectedRawVariant = pickVariant(rawVariants, quality, audioOnly);
   const variant = parseVariantInfo(selectedRawVariant);
 
   logger.info(
@@ -465,5 +500,6 @@ export async function getVodHlsStream(options: HlsClipOptions): Promise<HlsStrea
     end: options.end,
     quality,
     concurrency: options.concurrency,
+    audioOnly: options.audioOnly,
   });
 }

@@ -7,6 +7,7 @@
       "dependencies": {
         "@mtcute/bun": "^0.32.0",
         "@mtcute/dispatcher": "^0.32.0",
+        "@shevernitskiy/llm": "npm:@jsr/shevernitskiy__llm@^0.0.24",
         "@shevernitskiy/scraperator": "npm:@jsr/shevernitskiy__scraperator@^0.0.142",
       },
       "devDependencies": {
@@ -41,6 +42,8 @@
     "@mtcute/tl-runtime": ["@mtcute/tl-runtime@0.32.0", "", { "dependencies": { "@fuman/utils": "0.0.21", "long": "^5.3.2" } }, "sha512-9TdepMheddBismZDYVng9a0m+D4TqUPWcFc83JiArsXv+pmQiNWzXcoyoTUODUA35i6VOIdO5CuNd8hnKoZHpg=="],
 
     "@mtcute/wasm": ["@mtcute/wasm@0.32.0", "", {}, "sha512-Hkp+h7OYN1GPpJ3HYeQfBM/OgvF0oWCuS2OY0shwigQmNJib2gX7fIH+KDd5UsRNuHptWASawMjKA+wLnGpSvw=="],
+
+    "@shevernitskiy/llm": ["@jsr/shevernitskiy__llm@0.0.24", "https://npm.jsr.io/~/11/@jsr/shevernitskiy__llm/0.0.24.tgz", {}, "sha512-9T795YuJVHKg0nTnutngCykqzYKbtMZSNpdgSiTM4iCTIcBnaA8ob2s6IkvtMzaZ6Ojs2fqIE1UuPZHGUDk75g=="],
 
     "@shevernitskiy/scraperator": ["@jsr/shevernitskiy__scraperator@0.0.142", "https://npm.jsr.io/~/11/@jsr/shevernitskiy__scraperator/0.0.142.tgz", {}, "sha512-NcnVWYV84CZ8UjMS0lbPeLm3+sTmOIkvgHT0lF0TPrVfyib60nvb4aIdBwCeGJ7xybC1KrMoiZJD36nym4pFFQ=="],
 

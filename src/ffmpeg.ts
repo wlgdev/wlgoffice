@@ -16,6 +16,7 @@ export interface RemuxToFileOptions {
   ffmpegPath?: string;
   overwrite?: boolean;
   verbose?: boolean;
+  audioOnly?: boolean;
 }
 
 export interface RemuxToStreamOptions {
@@ -125,7 +126,7 @@ function setupInputPipe(
 // ─── 1. Сохранение в файл ────────────────────────────────────
 
 export async function remuxHlsStream(options: RemuxToFileOptions): Promise<FfmpegRunResult> {
-  const { stream, outPath, trimStart = 0, trimDuration = 0, ffmpegPath, overwrite = true, verbose = false } = options;
+  const { stream, outPath, trimStart = 0, trimDuration = 0, ffmpegPath, overwrite = true, verbose = false, audioOnly = false } = options;
 
   const startTime = performance.now();
   const ffmpegBin = resolveFfmpegBinary(ffmpegPath);
@@ -148,9 +149,13 @@ export async function remuxHlsStream(options: RemuxToFileOptions): Promise<Ffmpe
   args.push("-i", tmpIn);
   if (trimDuration > 0) args.push("-t", String(trimDuration));
 
+  args.push("-c", "copy");
+
+  if (audioOnly) {
+    args.push("-vn");
+  }
+
   args.push(
-    "-c",
-    "copy",
     "-bsf:a",
     "aac_adtstoasc",
     "-bsf",

@@ -238,6 +238,15 @@ export function parseQualities(text: string): string[] {
   return result;
 }
 
+export type VodMode = "video" | "audio";
+
+/**
+ * Определяет режим команды: !клип — видео, !аудио (алиас !audio) — только звук.
+ */
+export function parseVodMode(text: string): VodMode {
+  return /^!(?:аудио|audio)(?![а-яёa-z0-9_])/i.test(text.trim()) ? "audio" : "video";
+}
+
 export function parseVodMessage(text: string): ParsedVodMessage {
   const vkId = parseVkVideoId(text);
 

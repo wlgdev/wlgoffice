@@ -1,6 +1,6 @@
 import { TelegramClient, InputMedia, html } from "@mtcute/bun";
 import { Dispatcher, type MessageContext } from "@mtcute/dispatcher";
-import { parseVodMessage } from "./utils";
+import { parseVodMessage, parseVodMode, type VodMode } from "./utils";
 import { getVodHlsStream, QualityNotFoundError, type HlsStreamResult, type MuteStats } from "./hls";
 import { getVkHlsStream } from "./vk";
 import { remuxHlsStream, type FfmpegRunResult } from "./ffmpeg";
@@ -118,11 +118,15 @@ function buildCaption(params: {
   vodUrl: string;
   index: number;
   total: number;
+  mode: VodMode;
 }): string {
-  const { range, hls, muteStats, remux, vodId, vodUrl, index, total } = params;
+  const { range, hls, muteStats, remux, vodId, vodUrl, index, total, mode } = params;
 
   // Нумерацию «i/N» показываем в мультизадачах (>1 клипа), одиночный клип — без неё
-  const clipTitle = total > 1 ? `🎬 <b>Клип ${index}/${total} [${range.rawStart} - ${range.rawEnd}]</b>` : `🎬 <b>Клип [${range.rawStart} - ${range.rawEnd}]</b>`;
+  const icon = mode === "audio" ? "🎵" : "🎬";
+  const label = mode === "audio" ? "Аудио" : "Клип";
+  const clipTitle =
+    total > 1 ? `${icon} <b>${label} ${index}/${total} [${range.rawStart} - ${range.rawEnd}]</b>` : `${icon} <b>${label} [${range.rawStart} - ${range.rawEnd}]</b>`;
 
   let muteLine = "";
   if (muteStats.mutedFound > 0) {
@@ -133,10 +137,15 @@ function buildCaption(params: {
     muteLine = "\n🔊 <b>Звук:</b> чистый (без мьютов) ✅";
   }
 
+  const qualityLine =
+    mode === "audio"
+      ? `🎵 <b>Формат:</b> AAC (${remux.bitrateKbps} kbps)\n`
+      : `📺 <b>Качество:</b> ${hls.variant.quality} (${hls.variant.width}x${hls.variant.height} @ ${hls.variant.framerate}fps)\n`;
+
   return (
     `${clipTitle} (длительность: ${remux.duration}с)\n` +
-    `📺 <b>Качество:</b> ${hls.variant.quality} (${hls.variant.width}x${hls.variant.height} @ ${hls.variant.framerate}fps)\n` +
-    `📦 <b>Размер:</b> ${remux.sizeMB} MB (~${remux.bitrateKbps} kbps)${muteLine}\n` +
+    qualityLine +
+    `📦 <b>Размер:</b> ${remux.sizeMB} MB${muteLine}\n` +
     `⚡ <b>Время обработки:</b> ${(remux.elapsedMs / 1000).toFixed(1)}с\n` +
     `🔗 <b>VOD:</b> <a href="${vodUrl}">${vodId}</a>`
   );
@@ -186,7 +195,11 @@ dp.onNewMessage(async (msg) => {
 
     if (!config.telegram.chatIds.includes(msg.chat.id)) return;
 
-    if (!text || !text.startsWith("!клип")) return;
+    const mode = text ? parseVodMode(text) : "video";
+
+    if (!text || (!text.startsWith("!клип") && mode === "video")) return;
+
+    const isAudio = mode === "audio";
 
     // 1. Парсинг команды
     let parsedVod;
@@ -220,8 +233,9 @@ dp.onNewMessage(async (msg) => {
     // Оригинальная ссылка из поста юзера, фолбэк — канонический URL по ID
     const vodUrl = parsedVod.vodUrl ?? (isVk ? `https://vkvideo.ru/video${vodId}` : `https://www.twitch.tv/videos/${vodId}`);
     const requestedQualities = parsedVod.qualities;
-    const qualityLine =
-      requestedQualities.length > 0
+    const qualityLine = isAudio
+      ? `🎵 Режим: <b>только звук (AAC)</b>${requestedQualities.length > 0 ? ` (источник: ${requestedQualities.join(", ")})` : ""}\n`
+      : requestedQualities.length > 0
         ? `🎯 Качество: <b>${requestedQualities.join(", ")}</b>\n`
         : `🎯 Качество: <b>максимальное</b>\n`;
 
@@ -233,6 +247,7 @@ dp.onNewMessage(async (msg) => {
             end,
             quality: requestedQualities.length > 0 ? requestedQualities : undefined,
             proxy: config.proxy,
+            audioOnly: isAudio,
           })
         : getVodHlsStream({
             channel: channelName,
@@ -242,6 +257,7 @@ dp.onNewMessage(async (msg) => {
             quality: requestedQualities.length > 0 ? requestedQualities : undefined,
             oauth: config.twitch.oauth,
             proxy: config.proxy,
+            audioOnly: isAudio,
           });
 
     // 2. Отправка начального статусного сообщения
@@ -314,7 +330,7 @@ dp.onNewMessage(async (msg) => {
         continue;
       }
 
-      const outPath = `${config.tmpDir}/clip_${parsedVod.vodId}_${range.startSeconds}_${range.endSeconds}.mp4`;
+      const outPath = `${config.tmpDir}/${isAudio ? "audio" : "clip"}_${parsedVod.vodId}_${range.startSeconds}_${range.endSeconds}.${isAudio ? "m4a" : "mp4"}`;
 
       try {
         // Этап 1: Получение HLS потока
@@ -326,7 +342,7 @@ dp.onNewMessage(async (msg) => {
 
         // Этап 2: Ремуксинг
         statuses[i] =
-          `⚙️ [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — ремуксинг MP4 (${hlsStream.variant.quality})...`;
+          `⚙️ [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — ремуксинг ${isAudio ? "M4A" : `MP4 (${hlsStream.variant.quality})`}...`;
         await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
 
         const [remuxResult, muteStats] = await Promise.all([
@@ -336,6 +352,7 @@ dp.onNewMessage(async (msg) => {
             trimStart: hlsStream.trimStart,
             trimDuration: hlsStream.trimDuration,
             verbose: false,
+            audioOnly: isAudio,
           }),
           hlsStream.muteStats,
         ]);
@@ -356,7 +373,7 @@ dp.onNewMessage(async (msg) => {
         await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
 
         try {
-          await tg.sendTyping(msg.chat.id, "upload_video");
+          await tg.sendTyping(msg.chat.id, isAudio ? "upload_voice" : "upload_video");
         } catch {}
 
         const caption = buildCaption({
@@ -368,17 +385,23 @@ dp.onNewMessage(async (msg) => {
           vodUrl,
           index: currentIndex,
           total: totalRanges,
+          mode,
         });
 
         await tg.sendMedia(
           msg.chat.id,
-          InputMedia.video(`file:${outPath}`, {
-            caption: toTelegramHtml(caption),
-            width: hlsStream.variant.width,
-            height: hlsStream.variant.height,
-            // duration: Math.round(remuxResult.duration),
-            supportsStreaming: true,
-          }),
+          isAudio
+            ? InputMedia.audio(`file:${outPath}`, {
+                caption: toTelegramHtml(caption),
+                duration: Math.round(remuxResult.duration),
+              })
+            : InputMedia.video(`file:${outPath}`, {
+                caption: toTelegramHtml(caption),
+                width: hlsStream.variant.width,
+                height: hlsStream.variant.height,
+                // duration: Math.round(remuxResult.duration),
+                supportsStreaming: true,
+              }),
           { replyTo: isChannelChat(msg) ? undefined : msg.id },
         );
 
