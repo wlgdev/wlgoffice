@@ -21,6 +21,7 @@ import {
 } from "./hls";
 import { parseVkMasterPlaylist } from "./vk";
 import { remuxHlsStream } from "./ffmpeg";
+import { formatRetryAfter, FALLBACK_STT_MODEL, GROQ_MAX_FILE_BYTES, PRIMARY_STT_MODEL } from "./transcribe";
 
 describe("parseChatIds", () => {
   test("single id", () => expect(parseChatIds("123123")).toEqual([123123]));
@@ -93,6 +94,17 @@ describe("utils (trust boundary: текст из Telegram)", () => {
     expect(parseVodMode("!audio https://twitch.tv/videos/123 10:00 - 11:00")).toBe("audio");
     expect(parseVodMode("!аудио")).toBe("audio");
     expect(parseVodMode("!аудиочки шумим")).toBe("video");
+  });
+  test("parseVodMode различает !транскрипт", () => {
+    expect(parseVodMode("!транскрипт https://twitch.tv/videos/123 10:00 - 11:00")).toBe("transcript");
+    expect(parseVodMode("!транскрипция https://twitch.tv/videos/123")).toBe("transcript");
+    expect(parseVodMode("!транс https://twitch.tv/videos/123")).toBe("transcript");
+    expect(parseVodMode("!transcript https://twitch.tv/videos/123")).toBe("transcript");
+    expect(parseVodMode("!ТРАНСКРИПТ https://twitch.tv/videos/123")).toBe("transcript");
+    // префикс команды не должен матчить слова, начинающиеся так же
+    expect(parseVodMode("!транскрипты шумим")).toBe("video");
+    // в сообщении без команды упоминание транскрипта не переключает режим
+    expect(parseVodMode("!клип https://twitch.tv/videos/123 транскрипт")).toBe("video");
   });
 });
 
@@ -182,7 +194,7 @@ describe("pickVariant (точный матч, без фолбэка на мак�
   });
 });
 
-describe("pickVariant audio-only (режим !аудио)", () => {
+describe('pickVariant audio-only (режим !аудио)', () => {
   const withAudio: StreamVariant[] = [
     { bandwidth: 9000, codecs: "avc1.4D0028,mp4a.40.2", resolution: "1920x1080", video: "1080p60", framerate: "60", url: "v1" },
     { bandwidth: 2000, codecs: "avc1.4D401F,mp4a.40.2", resolution: "852x480", video: "480p30", framerate: "30", url: "v2" },
@@ -191,7 +203,7 @@ describe("pickVariant audio-only (режим !аудио)", () => {
   const videoOnly: StreamVariant[] = withAudio.slice(0, 2);
 
   test("без quality в аудио-режиме — audio_only приоритетнее максимального видео", () => {
-    expect(pickVariant(withAudio, undefined, true).url).toBe("a1");
+    expect(pickVariant(withAudio, undefined, "best").url).toBe("a1");
   });
 
   test("isAudioOnlyVariant отличает аудиодорожку от видео", () => {
@@ -204,25 +216,58 @@ describe("pickVariant audio-only (режим !аудио)", () => {
   });
 
   test("audio-only вариант есть — берём его, а не максимальное видео", () => {
-    expect(pickVariant(withAudio, undefined, true).url).toBe("a1");
+    expect(pickVariant(withAudio, undefined, "best").url).toBe("a1");
   });
 
   test("audio-only варианта нет — фолбэк на максимальный bandwidth (лучший AAC)", () => {
-    expect(pickVariant(videoOnly, undefined, true).url).toBe("v1");
+    expect(pickVariant(videoOnly, undefined, "best").url).toBe("v1");
   });
 
   test("quality в аудио-режиме выбирает источник звука, приоритетнее audio_only", () => {
-    expect(pickVariant(withAudio, "480p", true).url).toBe("v2");
-    expect(pickVariant(withAudio, ["1080p", "480p"], true).url).toBe("v1");
+    expect(pickVariant(withAudio, "480p", "best").url).toBe("v2");
+    expect(pickVariant(withAudio, ["1080p", "480p"], "best").url).toBe("v1");
   });
 
   test("quality в аудио-режиме не найдено — фолбэк на audio_only, а не ошибка", () => {
-    expect(pickVariant(withAudio, "2160p", true).url).toBe("a1");
+    expect(pickVariant(withAudio, "2160p", "best").url).toBe("a1");
   });
 
   test("video-режим на том же манифесте по-прежнему даёт максимальное", () => {
     expect(pickVariant(withAudio).url).toBe("v1");
     expect(pickVariant(videoOnly).url).toBe("v1");
+  });
+});
+
+describe('pickVariant cheapest (режим !транскрипт)', () => {
+  // Twitch для многих VOD не отдаёт audio_only вообще — только видео-варианты с AAC.
+  const videoOnly: StreamVariant[] = [
+    { bandwidth: 7630000, codecs: "avc1.4D402A,mp4a.40.2", resolution: "1920x1080", video: "1080p60", framerate: "60", url: "v1080" },
+    { bandwidth: 1330000, codecs: "avc1.4D401F,mp4a.40.2", resolution: "852x480", video: "480p30", framerate: "30", url: "v480" },
+    { bandwidth: 247753, codecs: "avc1.4D400C,mp4a.40.2", resolution: "284x160", video: "160p30", framerate: "30", url: "v160" },
+  ];
+  const withAudio: StreamVariant[] = [
+    ...videoOnly,
+    { bandwidth: 160000, codecs: "mp4a.40.2", resolution: "", video: "audio_only", framerate: "", url: "a1" },
+  ];
+
+  test("без audio_only — самое низкое качество, а не максимальное", () => {
+    expect(pickVariant(videoOnly, undefined, "cheapest").url).toBe("v160");
+  });
+
+  test("это в разы легче, чем дефолт для !аудио на том же манифесте", () => {
+    expect(pickVariant(videoOnly, undefined, "best").url).toBe("v1080");
+    const cheap = pickVariant(videoOnly, undefined, "cheapest").bandwidth;
+    const best = pickVariant(videoOnly, undefined, "best").bandwidth;
+    expect(best / cheap).toBeGreaterThan(20);
+  });
+
+  test("audio_only приоритетнее даже в cheapest — он и лёгкий, и чистый", () => {
+    expect(pickVariant(withAudio, undefined, "cheapest").url).toBe("a1");
+  });
+
+  test("quality из команды в режиме транскрипта не учитывается (выбор делает вызывающий)", () => {
+    // В !транскрипт effectiveQualities всегда undefined, поэтому quality сюда не доходит
+    expect(pickVariant(videoOnly, undefined, "cheapest").url).toBe("v160");
   });
 });
 
@@ -261,5 +306,26 @@ describe("parseVkMasterPlaylist (реальный формат VK: относи�
 
   test("пустой манифест — пустой список", () => {
     expect(parseVkMasterPlaylist("#EXTM3U", master)).toHaveLength(0);
+  });
+});
+
+describe("транскрипт: лимиты Groq free tier", () => {
+  test("основная модель V3, фолбэк turbo (у них раздельные счётчики ASH/ASD)", () => {
+    expect(PRIMARY_STT_MODEL).toBe("whisper-large-v3");
+    expect(FALLBACK_STT_MODEL).toBe("whisper-large-v3-turbo");
+  });
+
+  test("лимит файла 25 MB — это ~20 минут AAC 160 kbps", () => {
+    expect(GROQ_MAX_FILE_BYTES).toBe(26214400);
+    // 20 мин * 160 kbps / 8 = 24 МБ, в лимит влезает
+    expect((20 * 60 * 160_000) / 8).toBeLessThan(GROQ_MAX_FILE_BYTES);
+  });
+
+  test("formatRetryAfter: до 90с — секунды, дальше — минуты", () => {
+    expect(formatRetryAfter(2)).toBe("через 2с");
+    expect(formatRetryAfter(89)).toBe("через 89с");
+    expect(formatRetryAfter(90)).toBe("через ~2 мин");
+    expect(formatRetryAfter(3600)).toBe("через ~60 мин");
+    expect(formatRetryAfter(null)).toBe("неизвестно");
   });
 });

@@ -77,5 +77,11 @@ export default {
   twitch: {
     oauth: process.env.OAUTH || undefined,
   },
+  groq: {
+    apiKey: process.env.GROQ_APIKEY,
+  },
+  gemini: {
+    apiKey: process.env.GEMINI_APIKEY,
+  },
   tmpDir,
 };

@@ -238,13 +238,20 @@ export function parseQualities(text: string): string[] {
   return result;
 }
 
-export type VodMode = "video" | "audio";
+export type VodMode = "video" | "audio" | "transcript";
 
 /**
- * Определяет режим команды: !клип — видео, !аудио (алиас !audio) — только звук.
+ * Определяет режим команды:
+ * !транскрипт — расшифровка речи (Whisper + Gemini),
+ * !аудио (алиас !audio) — только звук,
+ * всё остальное — видеоклип.
  */
 export function parseVodMode(text: string): VodMode {
-  return /^!(?:аудио|audio)(?![а-яёa-z0-9_])/i.test(text.trim()) ? "audio" : "video";
+  const trimmed = text.trim();
+  if (/^!(?:транскрипт|транскрипция|транс|transcript)(?![а-яёa-z0-9_])/i.test(trimmed)) {
+    return "transcript";
+  }
+  return /^!(?:аудио|audio)(?![а-яёa-z0-9_])/i.test(trimmed) ? "audio" : "video";
 }
 
 export function parseVodMessage(text: string): ParsedVodMessage {

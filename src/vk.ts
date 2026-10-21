@@ -1,5 +1,5 @@
 import { Vk } from "@shevernitskiy/scraperator";
-import { streamFromVariants, type HlsStreamResult, type StreamVariant } from "./hls";
+import { streamFromVariants, type AudioPick, type HlsStreamResult, type StreamVariant } from "./hls";
 import logger from "./logger";
 
 export interface VkClipOptions {
@@ -10,7 +10,7 @@ export interface VkClipOptions {
   concurrency?: number;
   proxy?: string;
   accessToken?: string;
-  audioOnly?: boolean;
+  audio?: AudioPick;
 }
 
 /**
@@ -63,7 +63,7 @@ export function parseVkMasterPlaylist(playlistText: string, masterUrl: string): 
 }
 
 export async function getVkHlsStream(options: VkClipOptions): Promise<HlsStreamResult> {
-  const { videoId, start, end, quality, concurrency, proxy, accessToken, audioOnly } = options;
+  const { videoId, start, end, quality, concurrency, proxy, accessToken, audio } = options;
 
   if (start < 0 || end <= start) {
     throw new Error(`Invalid range: start=${start}, end=${end}`);
@@ -106,6 +106,6 @@ export async function getVkHlsStream(options: VkClipOptions): Promise<HlsStreamR
     end: Math.min(end, info.duration),
     quality,
     concurrency,
-    audioOnly,
+    audio,
   });
 }

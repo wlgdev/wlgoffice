@@ -1,9 +1,23 @@
 import { TelegramClient, InputMedia, html } from "@mtcute/bun";
 import { Dispatcher, type MessageContext } from "@mtcute/dispatcher";
 import { parseVodMessage, parseVodMode, type VodMode } from "./utils";
-import { getVodHlsStream, QualityNotFoundError, type HlsStreamResult, type MuteStats } from "./hls";
+import { getVodHlsStream, QualityNotFoundError, type AudioPick, type HlsStreamResult, type MuteStats } from "./hls";
 import { getVkHlsStream } from "./vk";
 import { remuxHlsStream, type FfmpegRunResult } from "./ffmpeg";
+import {
+  EmptyTranscriptError,
+  RateLimitError,
+  formatRetryAfter,
+  polishTranscript,
+  transcribeAudio,
+  FALLBACK_STT_MODEL,
+  GROQ_MAX_FILE_BYTES,
+  MAX_TRANSCRIPT_SECONDS,
+  POLISH_MODEL,
+  PRIMARY_STT_MODEL,
+  type PolishResult,
+  type SttResult,
+} from "./transcribe";
 import { existsSync } from "node:fs";
 import config from "./config";
 import logger from "./logger";
@@ -151,6 +165,49 @@ function buildCaption(params: {
   );
 }
 
+const STT_MODEL_LABELS: Record<string, string> = {
+  [PRIMARY_STT_MODEL]: "Whisper Large V3",
+  [FALLBACK_STT_MODEL]: "Whisper Large V3 Turbo",
+};
+
+/**
+ * Подпись к файлу транскрипта. Показывает всё, что мог пойти не так:
+ * какая модель распознавала, был ли fallback и удалось ли причесать текст.
+ */
+function buildTranscriptCaption(params: {
+  range: { rawStart: string; rawEnd: string };
+  stt: SttResult;
+  polish: PolishResult;
+  durationSec: number;
+  vodId: string;
+  vodUrl: string;
+}): string {
+  const { range, stt, polish, durationSec, vodId, vodUrl } = params;
+
+  const modelLine = `🎤 <b>Распознавание:</b> ${STT_MODEL_LABELS[stt.model] ?? stt.model}`;
+  const fallbackLine = stt.fallbackReason ? `\n   ↳ <i>fallback: ${stt.fallbackReason}</i>` : "";
+  const polishLine = polish.polished
+    ? `✨ <b>Обработка:</b> причесан ${POLISH_MODEL} (thinking: low)`
+    : `⚠️ <b>Обработка:</b> сырой текст без причесывания\n   ↳ <i>${POLISH_MODEL}: ${polish.failureReason ?? "неизвестная ошибка"}</i>`;
+
+  return (
+    `🎙 <b>Транскрипт [${range.rawStart} - ${range.rawEnd}]</b>\n` +
+    `⏱ <b>Длительность:</b> ${durationSec}с\n` +
+    `📝 <b>Символов:</b> ${polish.text.length}\n\n` +
+    `${modelLine}${fallbackLine}\n` +
+    `${polishLine}\n\n` +
+    `🔗 <b>VOD:</b> <a href="${vodUrl}">${vodId}</a>`
+  );
+}
+
+/** Короткий бейдж для строки статуса: какая модель и причесан ли текст. */
+function transcriptBadge(stt: SttResult, polish: PolishResult): string {
+  const model = stt.model === FALLBACK_STT_MODEL ? "V3 Turbo" : "V3";
+  const quality = polish.polished ? "причесан" : "сырой";
+  const warn = stt.model === FALLBACK_STT_MODEL ? " ⚠️" : "";
+  return `${model}${warn} · ${quality}`;
+}
+
 function buildStatusMessage(vodId: string, statuses: string[], header?: string): string {
   const title = header ?? `📥 <b>Обработка VOD <code>${vodId}</code></b>`;
   return `${title}\n\n${statuses.join("\n")}`;
@@ -200,6 +257,7 @@ dp.onNewMessage(async (msg) => {
     if (!text || (!text.startsWith("!клип") && mode === "video")) return;
 
     const isAudio = mode === "audio";
+    const isTranscript = mode === "transcript";
 
     // 1. Парсинг команды
     let parsedVod;
@@ -233,11 +291,21 @@ dp.onNewMessage(async (msg) => {
     // Оригинальная ссылка из поста юзера, фолбэк — канонический URL по ID
     const vodUrl = parsedVod.vodUrl ?? (isVk ? `https://vkvideo.ru/video${vodId}` : `https://www.twitch.tv/videos/${vodId}`);
     const requestedQualities = parsedVod.qualities;
-    const qualityLine = isAudio
-      ? `🎵 Режим: <b>только звук (AAC)</b>${requestedQualities.length > 0 ? ` (источник: ${requestedQualities.join(", ")})` : ""}\n`
+    const audioPick: AudioPick = isTranscript ? "cheapest" : isAudio ? "best" : "none";
+    // В режиме транскрипта качество из команды игнорируется: Groq смотрит только на звук,
+    // поэтому берём самую лёгкую дорожку, а не лучшую по битрейту.
+    const effectiveQualities = isTranscript
+      ? undefined
       : requestedQualities.length > 0
-        ? `🎯 Качество: <b>${requestedQualities.join(", ")}</b>\n`
-        : `🎯 Качество: <b>максимальное</b>\n`;
+        ? requestedQualities
+        : undefined;
+    const qualityLine = isTranscript
+      ? `🎙 Режим: <b>транскрипт речи</b> (Whisper Large V3 → Gemini Flash Lite)\n`
+      : isAudio
+        ? `🎵 Режим: <b>только звук (AAC)</b>${requestedQualities.length > 0 ? ` (источник: ${requestedQualities.join(", ")})` : ""}\n`
+        : requestedQualities.length > 0
+          ? `🎯 Качество: <b>${requestedQualities.join(", ")}</b>\n`
+          : `🎯 Качество: <b>максимальное</b>\n`;
 
     const fetchStream = (start: number, end: number) =>
       isVk
@@ -245,19 +313,19 @@ dp.onNewMessage(async (msg) => {
             videoId: vodId,
             start,
             end,
-            quality: requestedQualities.length > 0 ? requestedQualities : undefined,
+            quality: effectiveQualities,
             proxy: config.proxy,
-            audioOnly: isAudio,
+            audio: audioPick,
           })
         : getVodHlsStream({
             channel: channelName,
             vodId,
             start,
             end,
-            quality: requestedQualities.length > 0 ? requestedQualities : undefined,
+            quality: effectiveQualities,
             oauth: config.twitch.oauth,
             proxy: config.proxy,
-            audioOnly: isAudio,
+            audio: audioPick,
           });
 
     // 2. Отправка начального статусного сообщения
@@ -269,7 +337,7 @@ dp.onNewMessage(async (msg) => {
       `📥 <b>Запрос принят!</b>\n` +
       sourceLine +
       qualityLine +
-      `⏱ Клипов в очереди: <b>${totalRanges}</b>\n\n` +
+      `⏱ ${isTranscript ? "Фрагментов" : "Клипов"} в очереди: <b>${totalRanges}</b>\n\n` +
       parsedVod.ranges
         .map((r, i) => `⏳ [${i + 1}/${totalRanges}] <code>${r.rawStart} - ${r.rawEnd}</code> — ожидание...`)
         .join("\n");
@@ -302,6 +370,12 @@ dp.onNewMessage(async (msg) => {
     let totalUnmutedSegments = 0;
     let totalFailedUnmutedSegments = 0;
 
+    // Счётчики режима транскрипта
+    let transcriptTurboCount = 0;
+    let transcriptPolishedCount = 0;
+    // После 429 на Whisper V3 весь остаток команды идёт на turbo: заведомый 429 не ловим повторно.
+    let preferTurbo = false;
+
     // 3. Цикл обработки клипов
     for (let i = 0; i < parsedVod.ranges.length; i++) {
       const range = parsedVod.ranges[i]!;
@@ -321,12 +395,118 @@ dp.onNewMessage(async (msg) => {
 
       // 3.2 Валидация длительности
       const clipDuration = range.endSeconds - range.startSeconds;
-      if (clipDuration > MAX_DURATION_SECONDS) {
-        const maxMinutes = Math.round(MAX_DURATION_SECONDS / 60);
+      // Groq free tier не примет файл больше 25 MB (~20 минут AAC 160 kbps)
+      const maxDuration = isTranscript ? MAX_TRANSCRIPT_SECONDS : MAX_DURATION_SECONDS;
+      if (clipDuration > maxDuration) {
+        const maxMinutes = Math.round(maxDuration / 60);
         const requestedMinutes = (clipDuration / 60).toFixed(1);
         statuses[i] =
           `❌ [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — превышен лимит длительности (${requestedMinutes} мин > ${maxMinutes} мин)`;
         await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+        continue;
+      }
+
+      // Режим транскрипта: собственный конвейер (аудио → Whisper → Gemini → .txt)
+      if (isTranscript) {
+        const rawRange = `${range.rawStart} - ${range.rawEnd}`;
+        const tag = `[${currentIndex}/${totalRanges}] <code>${rawRange}</code>`;
+        const stem = `${config.tmpDir}/transcript_${parsedVod.vodId}_${range.startSeconds}_${range.endSeconds}`;
+        const audioPath = `${stem}.m4a`;
+        const txtPath = `${stem}.txt`;
+
+        try {
+          statuses[i] = `🔄 ${tag} — получение аудио...`;
+          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+
+          const hlsStream = await fetchStream(range.startSeconds, range.endSeconds);
+
+          statuses[i] = `⚙️ ${tag} — ремуксинг M4A...`;
+          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+
+          const remuxResult = await remuxHlsStream({
+            stream: hlsStream.stream,
+            outPath: audioPath,
+            trimStart: hlsStream.trimStart,
+            trimDuration: hlsStream.trimDuration,
+            verbose: false,
+            audioOnly: true,
+          });
+          // Статистика мьютов транскрипту не нужна, но промис надо потребить, иначе будет unhandled rejection
+          await hlsStream.muteStats.catch(() => {});
+
+          if (remuxResult.sizeBytes > GROQ_MAX_FILE_BYTES) {
+            statuses[i] =
+              `❌ ${tag} — слишком большой фрагмент для Groq (${remuxResult.sizeMB} MB > 25 MB). Разбей интервал пополам.`;
+            continue;
+          }
+
+          statuses[i] = `📝 ${tag} — распознавание речи (${preferTurbo ? "Turbo" : "V3"})...`;
+          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+
+          const stt = await transcribeAudio(Bun.file(audioPath), remuxResult.duration, preferTurbo);
+          if (stt.model === FALLBACK_STT_MODEL) {
+            transcriptTurboCount++;
+            preferTurbo = true;
+          }
+
+          statuses[i] = `✨ ${tag} — причесывание текста...`;
+          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+
+          const polish = await polishTranscript(stt.text);
+          if (polish.polished) transcriptPolishedCount++;
+
+          await Bun.write(txtPath, `${polish.text}\n`);
+
+          statuses[i] = `⬆️ ${tag} — отправка (${polish.text.length} символов)...`;
+          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+
+          try {
+            await tg.sendTyping(msg.chat.id, "upload_document");
+          } catch {}
+
+          await tg.sendMedia(
+            msg.chat.id,
+            InputMedia.document(`file:${txtPath}`, {
+              caption: toTelegramHtml(
+                buildTranscriptCaption({
+                  range,
+                  stt,
+                  polish,
+                  durationSec: Math.round(remuxResult.duration),
+                  vodId: parsedVod.vodId,
+                  vodUrl,
+                }),
+              ),
+            }),
+            { replyTo: isChannelChat(msg) ? undefined : msg.id },
+          );
+
+          totalDurationSec += remuxResult.duration;
+          statuses[i] = `✅ ${tag} (${Math.round(remuxResult.duration)}с · ${transcriptBadge(stt, polish)})`;
+          successCount++;
+        } catch (e: any) {
+          if (e instanceof RateLimitError) {
+            logger.warn(`[Groq Limit ${currentIndex}/${totalRanges}]:`, e.detail);
+            statuses[i] = `❌ ${tag} — ${e.detail}`;
+            for (let j = i + 1; j < parsedVod.ranges.length; j++) {
+              const pending = parsedVod.ranges[j]!;
+              statuses[j] =
+                `⏭ [${j + 1}/${totalRanges}] <code>${pending.rawStart} - ${pending.rawEnd}</code> — пропущен (лимит Groq)`;
+            }
+            break;
+          }
+          if (e instanceof EmptyTranscriptError) {
+            statuses[i] = `⚠️ ${tag} — в этом фрагменте не распознано речи`;
+          } else {
+            logger.error(`[Error Transcript ${currentIndex}/${totalRanges}]:`, e);
+            const errDescription = e?.message ? e.message.slice(0, 200) : String(e);
+            statuses[i] = `❌ ${tag} — ошибка: ${errDescription}`;
+          }
+        } finally {
+          await safeDeleteFile(audioPath);
+          await safeDeleteFile(txtPath);
+          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+        }
         continue;
       }
 
@@ -449,14 +629,22 @@ dp.onNewMessage(async (msg) => {
     let finalHeader = `⚠️ <b>Обработка завершена</b> (Успешно: ${successCount} из ${totalRanges})`;
 
     if (successCount > 0) {
-      finalHeader += `\n📊 <b>Итог:</b> ${totalDurationSec}с видео · ${totalSizeMB.toFixed(2)} MB`;
-
-      if (totalMutedSegments > 0) {
-        const percent = Math.round((totalUnmutedSegments / totalMutedSegments) * 100);
-        const icon = totalFailedUnmutedSegments === 0 ? "✅" : "⚠️";
-        finalHeader += `\n🔊 <b>Восстановление звука:</b> ${totalUnmutedSegments}/${totalMutedSegments} сегментов (${percent}%) ${icon}`;
+      if (isTranscript) {
+        finalHeader += `\n🎙 <b>Итог:</b> ${Math.round(totalDurationSec)}с аудио · ${successCount} расшифровок`;
+        finalHeader += `\n✨ <b>Причесано:</b> ${transcriptPolishedCount} из ${successCount}`;
+        if (transcriptTurboCount > 0) {
+          finalHeader += `\n⚠️ <b>Turbo-фолбэк:</b> ${transcriptTurboCount} (лимит Whisper V3 исчерпан)`;
+        }
       } else {
-        finalHeader += `\n🔊 <b>Звук:</b> замьюченных сегментов не обнаружено ✅`;
+        finalHeader += `\n📊 <b>Итог:</b> ${totalDurationSec}с видео · ${totalSizeMB.toFixed(2)} MB`;
+
+        if (totalMutedSegments > 0) {
+          const percent = Math.round((totalUnmutedSegments / totalMutedSegments) * 100);
+          const icon = totalFailedUnmutedSegments === 0 ? "✅" : "⚠️";
+          finalHeader += `\n🔊 <b>Восстановление звука:</b> ${totalUnmutedSegments}/${totalMutedSegments} сегментов (${percent}%) ${icon}`;
+        } else {
+          finalHeader += `\n🔊 <b>Звук:</b> замьюченных сегментов не обнаружено ✅`;
+        }
       }
     }
 

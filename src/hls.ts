@@ -13,7 +13,7 @@ export interface HlsClipOptions {
   concurrency?: number;
   proxy?: string;
   oauth?: string;
-  audioOnly?: boolean;
+  audio?: AudioPick;
 }
 
 /**
@@ -160,10 +160,18 @@ export function isAudioOnlyVariant(v: StreamVariant): boolean {
   return !v.resolution && !/avc|hev|hvc|vp0?9|av01/i.test(v.codecs);
 }
 
+/**
+ * Как выбирать источник звука.
+ * none — обычный видеоклип, качество берётся из команды;
+ * best — !аудио: нужна лучшая AAC-дорожка;
+ * cheapest — !транскрипт: важен вес скачанного, а не качество звука.
+ */
+export type AudioPick = "none" | "best" | "cheapest";
+
 export function pickVariant(
   variants: StreamVariant[],
   quality?: string | string[],
-  audioOnly = false,
+  audio: AudioPick = "none",
 ): StreamVariant {
   const requested = (Array.isArray(quality) ? quality : quality ? [quality] : [])
     .map((q) => q.toLowerCase())
@@ -180,7 +188,7 @@ export function pickVariant(
     throw new Error("No variants found in HLS manifest");
   }
 
-  if (audioOnly) {
+  if (audio !== "none") {
     // 1. Явное качество из команды — источник звука именно из него.
     if (requested.length > 0) {
       for (const q of requested) {
@@ -189,13 +197,14 @@ export function pickVariant(
       }
     }
 
-    // 2. Отдельная аудиодорожка — качаем только звук.
+    // 2. Отдельная аудиодорожка — она и есть и самый лёгкий, и самый чистый источник.
     const audioVariant = variants.find(isAudioOnlyVariant);
     if (audioVariant) return audioVariant;
 
-    // 3. Ни того, ни другого — максимальный bandwidth: AAC в нём лучше всего,
-    //    видео всё равно выкинет ffmpeg.
-    return bestVariant;
+    // 3. Отдельной дорожки нет (Twitch VOD часто отдаёт только видео-варианты с AAC).
+    //    Для выкладки аудио берём лучший AAC, для транскрипта — самый лёгкий поток,
+    //    потому что видео всё равно выкинет ffmpeg, а качать его в 7 Мбит/с незачем.
+    return audio === "cheapest" ? sorted[sorted.length - 1]! : bestVariant;
   }
 
   // Целевое качество не задано — качаем максимальное, как раньше
@@ -396,7 +405,7 @@ export interface StreamFromVariantsOptions {
   end: number;
   quality?: string | string[];
   concurrency?: number;
-  audioOnly?: boolean;
+  audio?: AudioPick;
 }
 
 /**
@@ -407,13 +416,13 @@ export async function streamFromVariants(
   rawVariants: StreamVariant[],
   options: StreamFromVariantsOptions,
 ): Promise<HlsStreamResult> {
-  const { start, end, quality, concurrency = 6, audioOnly = false } = options;
+  const { start, end, quality, concurrency = 6, audio = "none" } = options;
 
   if (start < 0 || end <= start) {
     throw new Error(`Invalid range: start=${start}, end=${end}`);
   }
 
-  const selectedRawVariant = pickVariant(rawVariants, quality, audioOnly);
+  const selectedRawVariant = pickVariant(rawVariants, quality, audio);
   const variant = parseVariantInfo(selectedRawVariant);
 
   logger.info(
@@ -500,6 +509,6 @@ export async function getVodHlsStream(options: HlsClipOptions): Promise<HlsStrea
     end: options.end,
     quality,
     concurrency: options.concurrency,
-    audioOnly: options.audioOnly,
+    audio: options.audio,
   });
 }
