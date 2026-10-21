@@ -13,6 +13,44 @@ export function parseChatIds(raw?: string): number[] {
   return ids;
 }
 
+/**
+ * Алиасы Twitch-каналов по умолчанию: алиас → канонический логин канала.
+ */
+export const DEFAULT_CHANNEL_ALIASES: Record<string, string> = {
+  "влг": "welovegames",
+  "wlg": "welovegames",
+  "welovegames": "welovegames",
+  "табула": "tabula",
+  "tabula": "tabula",
+};
+
+/**
+ * Парсит env-переменную TWITCH_CHANNELS в карту алиас → логин канала.
+ * Формат: "логин:алиас1,алиас2;логин2:алиас3".
+ * Канонический логин добавляется в алиасы автоматически.
+ * Значения из env перекрывают дефолты.
+ */
+export function parseChannelAliases(raw?: string): Record<string, string> {
+  const aliases: Record<string, string> = { ...DEFAULT_CHANNEL_ALIASES };
+
+  for (const group of (raw ?? "").split(";")) {
+    const [loginPart, aliasPart] = group.split(":");
+    const login = loginPart?.trim().toLowerCase();
+
+    if (!login) {
+      continue;
+    }
+
+    for (const alias of (aliasPart ?? "").split(",").map((a) => a.trim().toLowerCase()).filter(Boolean)) {
+      aliases[alias] = login;
+    }
+
+    aliases[login] = login;
+  }
+
+  return aliases;
+}
+
 for (const arg of process.argv.slice(2)) {
   if (arg.startsWith("--")) {
     const [key, value] = arg.slice(2).split("=");
@@ -76,6 +114,7 @@ export default {
   proxy: process.env.PROXY ? "https://boostyflare.mahahuha5816.workers.dev/" : undefined,
   twitch: {
     oauth: process.env.OAUTH || undefined,
+    channels: parseChannelAliases(process.env.TWITCH_CHANNELS),
   },
   groq: {
     apiKey: process.env.GROQ_APIKEY,

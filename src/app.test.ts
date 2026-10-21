@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import config, { parseChatIds } from "./config";
+import config, { parseChannelAliases, parseChatIds } from "./config";
 import {
+  parseChannelAlias,
   parseQualities,
   parseVodId,
   parseVodMessage,
@@ -21,7 +22,9 @@ import {
 } from "./hls";
 import { parseVkMasterPlaylist } from "./vk";
 import { remuxHlsStream } from "./ffmpeg";
+import { pickLiveVod } from "./twitch";
 import { formatRetryAfter, FALLBACK_STT_MODEL, GROQ_MAX_FILE_BYTES, PRIMARY_STT_MODEL } from "./transcribe";
+import type { TwitchStreamInfo, TwitchVodInfo } from "@shevernitskiy/scraperator";
 
 describe("parseChatIds", () => {
   test("single id", () => expect(parseChatIds("123123")).toEqual([123123]));
@@ -79,6 +82,7 @@ describe("utils (trust boundary: текст из Telegram)", () => {
     expect(vk.platform).toBe("vk");
     expect(vk.vodId).toBe("-46211765_456252477");
     expect(vk.vodUrl).toBe("https://vkvideo.ru/video-46211765_456252477");
+    expect(vk.channel).toBeNull();
     expect(vk.ranges).toHaveLength(1);
     expect(vk.qualities).toEqual(["720p"]);
 
@@ -277,6 +281,91 @@ describe("hls playlist", () => {
     const { segments } = parseMediaPlaylist(text, "https://example.com/vod/");
     expect(segments).toHaveLength(3);
     expect(filterSegmentsByRange(segments, 5, 15)).toHaveLength(2);
+  });
+});
+
+describe("алиасы Twitch-каналов (влг/wlg → welovegames, табула/tabula → tabula)", () => {
+  const aliases = parseChannelAliases();
+
+  test("parseChannelAliases: дефолты на месте", () => {
+    expect(aliases["влг"]).toBe("welovegames");
+    expect(aliases["wlg"]).toBe("welovegames");
+    expect(aliases["welovegames"]).toBe("welovegames");
+    expect(aliases["табула"]).toBe("tabula");
+    expect(aliases["tabula"]).toBe("tabula");
+  });
+
+  test("parseChannelAliases: env расширяет мапу, логин добавляется в алиасы сам", () => {
+    const custom = parseChannelAliases("mychan:мк;tabula:табула");
+    expect(custom["мк"]).toBe("mychan");
+    expect(custom["mychan"]).toBe("mychan");
+    expect(custom["табула"]).toBe("tabula");
+    // дефолты не теряются
+    expect(custom["влг"]).toBe("welovegames");
+  });
+
+  test("parseChannelAlias находит алиас в команде", () => {
+    expect(parseChannelAlias("!клип влг 10:00 - 12:30", aliases)).toBe("welovegames");
+    expect(parseChannelAlias("!клип wlg 10:00 - 12:30", aliases)).toBe("welovegames");
+    expect(parseChannelAlias("!клип welovegames 10:00 - 12:30", aliases)).toBe("welovegames");
+    expect(parseChannelAlias("!клип табула 10:00 - 12:30", aliases)).toBe("tabula");
+    expect(parseChannelAlias("!клип tabula 10:00 - 12:30", aliases)).toBe("tabula");
+  });
+
+  test("регистр не важен", () => {
+    expect(parseChannelAlias("!клип WLG 10:00", aliases)).toBe("welovegames");
+    expect(parseChannelAlias("!клип ТАБУЛА 10:00", aliases)).toBe("tabula");
+  });
+
+  test("границы слова строгие — подстроки не матчатся", () => {
+    expect(parseChannelAlias("!клип wlgx 10:00", aliases)).toBeNull();
+    expect(parseChannelAlias("!клип влгоп 10:00", aliases)).toBeNull();
+    expect(parseChannelAlias("!клип xwlg 10:00", aliases)).toBeNull();
+    expect(parseChannelAlias("!клип tabula2 10:00", aliases)).toBeNull();
+  });
+
+  test("parseVodMessage: алиас вместо ссылки — платформа twitch, vodId ждёт резолва", () => {
+    const parsed = parseVodMessage("!клип влг 10:00 - 12:30", aliases);
+    expect(parsed.platform).toBe("twitch");
+    expect(parsed.vodId).toBeNull();
+    expect(parsed.vodUrl).toBeNull();
+    expect(parsed.channel).toBe("welovegames");
+    expect(parsed.ranges).toHaveLength(1);
+  });
+
+  test("ссылка важнее алиаса", () => {
+    const parsed = parseVodMessage("!клип https://twitch.tv/videos/123 влг 10:00 - 12:30", aliases);
+    expect(parsed.vodId).toBe("123");
+    expect(parsed.channel).toBe("welovegames");
+  });
+
+  test("без алиаса и без ссылки — платформа не определяется", () => {
+    const parsed = parseVodMessage("!клип просто текст", aliases);
+    expect(parsed.platform).toBeNull();
+    expect(parsed.channel).toBeNull();
+  });
+});
+
+describe("pickLiveVod (VOD текущего эфира)", () => {
+  const vod = (id: string, broadcastId: string) => ({ id, broadcast_id: broadcastId }) as TwitchVodInfo;
+  const info = (online: boolean, id: string) => ({ online, id }) as TwitchStreamInfo;
+
+  test("эфир онлайн и broadcast id совпал — берём VOD последнего архива", () => {
+    const live = pickLiveVod([vod("123", "456")], info(true, "456"));
+    expect(live?.vodId).toBe("123");
+    expect(live?.vodUrl).toBe("https://www.twitch.tv/videos/123");
+  });
+
+  test("канал офлайн — VOD нет", () => {
+    expect(pickLiveVod([vod("123", "456")], info(false, "456"))).toBeNull();
+  });
+
+  test("broadcast id не совпал — архив чужой, VOD нет", () => {
+    expect(pickLiveVod([vod("123", "456")], info(true, "789"))).toBeNull();
+  });
+
+  test("архивов нет — VOD нет", () => {
+    expect(pickLiveVod([], info(true, "456"))).toBeNull();
   });
 });
 

@@ -197,8 +197,40 @@ export interface ParsedVodMessage {
   platform: VodPlatform | null;
   vodId: string | null;
   vodUrl: string | null;
+  /** Канонический логин Twitch-канала, если в тексте найден алиас (влг, табула, ...) */
+  channel: string | null;
   ranges: ParsedTimeRange[];
   qualities: string[];
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Ищет в тексте алиас Twitch-канала и возвращает его канонический логин.
+ * Границы слова строгие: кириллица не входит в \w, поэтому обычный \b не подходит —
+ * проверяем, что рядом с алиасом нет букв, цифр и подчёркивания.
+ *
+ * @param text Исходный текст команды
+ * @param aliases Карта алиас → логин канала
+ * @returns Логин канала или null, если алиас не найден
+ */
+export function parseChannelAlias(text: string, aliases: Record<string, string>): string | null {
+  const lower = text.toLowerCase();
+
+  for (const [alias, channel] of Object.entries(aliases)) {
+    const pattern = new RegExp(
+      `(^|[^\\p{L}\\p{N}_])${escapeRegExp(alias.toLowerCase())}(?![\\p{L}\\p{N}_])`,
+      "u",
+    );
+
+    if (pattern.test(lower)) {
+      return channel;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -254,7 +286,7 @@ export function parseVodMode(text: string): VodMode {
   return /^!(?:аудио|audio)(?![а-яёa-z0-9_])/i.test(trimmed) ? "audio" : "video";
 }
 
-export function parseVodMessage(text: string): ParsedVodMessage {
+export function parseVodMessage(text: string, aliases: Record<string, string> = {}): ParsedVodMessage {
   const vkId = parseVkVideoId(text);
 
   if (vkId) {
@@ -262,6 +294,7 @@ export function parseVodMessage(text: string): ParsedVodMessage {
       platform: "vk",
       vodId: vkId,
       vodUrl: parseVkUrl(text),
+      channel: null,
       ranges: parseTimeRanges(text),
       qualities: parseQualities(text),
     };
@@ -269,10 +302,24 @@ export function parseVodMessage(text: string): ParsedVodMessage {
 
   const twitchId = parseVodId(text);
 
+  if (twitchId) {
+    return {
+      platform: "twitch",
+      vodId: twitchId,
+      vodUrl: parseVodUrl(text),
+      channel: parseChannelAlias(text, aliases),
+      ranges: parseTimeRanges(text),
+      qualities: parseQualities(text),
+    };
+  }
+
+  const channel = parseChannelAlias(text, aliases);
+
   return {
-    platform: twitchId ? "twitch" : null,
-    vodId: twitchId,
-    vodUrl: parseVodUrl(text),
+    platform: channel ? "twitch" : null,
+    vodId: null,
+    vodUrl: null,
+    channel,
     ranges: parseTimeRanges(text),
     qualities: parseQualities(text),
   };

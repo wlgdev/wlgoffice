@@ -3,6 +3,7 @@ import { Dispatcher, type MessageContext } from "@mtcute/dispatcher";
 import { parseVodMessage, parseVodMode, type VodMode } from "./utils";
 import { getVodHlsStream, QualityNotFoundError, type AudioPick, type HlsStreamResult, type MuteStats } from "./hls";
 import { getVkHlsStream } from "./vk";
+import { ChannelOfflineError, DEFAULT_CHANNEL, resolveLiveVod } from "./twitch";
 import { remuxHlsStream, type FfmpegRunResult } from "./ffmpeg";
 import {
   EmptyTranscriptError,
@@ -262,16 +263,19 @@ dp.onNewMessage(async (msg) => {
     // 1. Парсинг команды
     let parsedVod;
     try {
-      parsedVod = parseVodMessage(text);
+      parsedVod = parseVodMessage(text, config.twitch.channels);
     } catch (e: any) {
       await answerText(msg, toTelegramHtml(`❌ <b>Ошибка парсинга команды:</b> <code>${e?.message || e}</code>`));
       return;
     }
 
-    if (!parsedVod.platform || !parsedVod.vodId) {
+    if (!parsedVod.platform) {
       await answerText(
         msg,
-        toTelegramHtml("❌ <b>Ошибка:</b> не удалось распознать ссылку (Twitch VOD или VK Видео)."),
+        toTelegramHtml(
+          "❌ <b>Ошибка:</b> не удалось распознать ссылку (Twitch VOD или VK Видео) " +
+            "или канал (<code>влг</code>/<code>wlg</code>, <code>табула</code>/<code>tabula</code>).",
+        ),
       );
       return;
     }
@@ -285,9 +289,28 @@ dp.onNewMessage(async (msg) => {
     }
 
     const isVk = parsedVod.platform === "vk";
-    const vodId = parsedVod.vodId;
+    const channelName = parsedVod.channel ?? DEFAULT_CHANNEL;
+    let vodId = parsedVod.vodId;
+
+    // Вместо ссылки указан алиас канала — ищем VOD текущего эфира
+    if (!vodId) {
+      let live;
+      try {
+        live = await resolveLiveVod(channelName, { proxy: config.proxy, oauth: config.twitch.oauth });
+      } catch (e: any) {
+        const reason =
+          e instanceof ChannelOfflineError
+            ? `Канал <code>${channelName}</code> сейчас не в эфире — клипить нечего.`
+            : `Не удалось найти VOD текущего эфира канала <code>${channelName}</code>: ${e?.message || e}`;
+        await answerText(msg, toTelegramHtml(`❌ <b>Ошибка:</b> ${reason}`));
+        return;
+      }
+
+      vodId = live.vodId;
+      parsedVod = { ...parsedVod, vodId: live.vodId, vodUrl: live.vodUrl };
+    }
+
     const totalRanges = parsedVod.ranges.length;
-    const channelName = "welovegames";
     // Оригинальная ссылка из поста юзера, фолбэк — канонический URL по ID
     const vodUrl = parsedVod.vodUrl ?? (isVk ? `https://vkvideo.ru/video${vodId}` : `https://www.twitch.tv/videos/${vodId}`);
     const requestedQualities = parsedVod.qualities;
@@ -360,7 +383,7 @@ dp.onNewMessage(async (msg) => {
     const statusMsgId = statusMsg.id;
 
     const statuses: string[] = parsedVod.ranges.map((r) => `<code>${r.rawStart} - ${r.rawEnd}</code>`);
-    statusCtx = { chatId, msgId: statusMsgId, vodId: parsedVod.vodId, lines: statuses };
+    statusCtx = { chatId, msgId: statusMsgId, vodId, lines: statuses };
     let successCount = 0;
 
     // Счётчики для итоговой статистики
@@ -389,7 +412,7 @@ dp.onNewMessage(async (msg) => {
       ) {
         statuses[i] =
           `❌ [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — некорректный интервал`;
-        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
         continue;
       }
 
@@ -402,7 +425,7 @@ dp.onNewMessage(async (msg) => {
         const requestedMinutes = (clipDuration / 60).toFixed(1);
         statuses[i] =
           `❌ [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — превышен лимит длительности (${requestedMinutes} мин > ${maxMinutes} мин)`;
-        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
         continue;
       }
 
@@ -410,18 +433,18 @@ dp.onNewMessage(async (msg) => {
       if (isTranscript) {
         const rawRange = `${range.rawStart} - ${range.rawEnd}`;
         const tag = `[${currentIndex}/${totalRanges}] <code>${rawRange}</code>`;
-        const stem = `${config.tmpDir}/transcript_${parsedVod.vodId}_${range.startSeconds}_${range.endSeconds}`;
+        const stem = `${config.tmpDir}/transcript_${vodId}_${range.startSeconds}_${range.endSeconds}`;
         const audioPath = `${stem}.m4a`;
         const txtPath = `${stem}.txt`;
 
         try {
           statuses[i] = `🔄 ${tag} — получение аудио...`;
-          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
 
           const hlsStream = await fetchStream(range.startSeconds, range.endSeconds);
 
           statuses[i] = `⚙️ ${tag} — ремуксинг M4A...`;
-          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
 
           const remuxResult = await remuxHlsStream({
             stream: hlsStream.stream,
@@ -441,7 +464,7 @@ dp.onNewMessage(async (msg) => {
           }
 
           statuses[i] = `📝 ${tag} — распознавание речи (${preferTurbo ? "Turbo" : "V3"})...`;
-          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
 
           const stt = await transcribeAudio(Bun.file(audioPath), remuxResult.duration, preferTurbo);
           if (stt.model === FALLBACK_STT_MODEL) {
@@ -450,7 +473,7 @@ dp.onNewMessage(async (msg) => {
           }
 
           statuses[i] = `✨ ${tag} — причесывание текста...`;
-          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
 
           const polish = await polishTranscript(stt.text);
           if (polish.polished) transcriptPolishedCount++;
@@ -458,7 +481,7 @@ dp.onNewMessage(async (msg) => {
           await Bun.write(txtPath, `${polish.text}\n`);
 
           statuses[i] = `⬆️ ${tag} — отправка (${polish.text.length} символов)...`;
-          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
 
           try {
             await tg.sendTyping(msg.chat.id, "upload_document");
@@ -473,7 +496,7 @@ dp.onNewMessage(async (msg) => {
                   stt,
                   polish,
                   durationSec: Math.round(remuxResult.duration),
-                  vodId: parsedVod.vodId,
+                  vodId,
                   vodUrl,
                 }),
               ),
@@ -505,25 +528,25 @@ dp.onNewMessage(async (msg) => {
         } finally {
           await safeDeleteFile(audioPath);
           await safeDeleteFile(txtPath);
-          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
         }
         continue;
       }
 
-      const outPath = `${config.tmpDir}/${isAudio ? "audio" : "clip"}_${parsedVod.vodId}_${range.startSeconds}_${range.endSeconds}.${isAudio ? "m4a" : "mp4"}`;
+      const outPath = `${config.tmpDir}/${isAudio ? "audio" : "clip"}_${vodId}_${range.startSeconds}_${range.endSeconds}.${isAudio ? "m4a" : "mp4"}`;
 
       try {
         // Этап 1: Получение HLS потока
         statuses[i] =
           `🔄 [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — получение HLS...`;
-        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
 
         const hlsStream = await fetchStream(range.startSeconds, range.endSeconds);
 
         // Этап 2: Ремуксинг
         statuses[i] =
           `⚙️ [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — ремуксинг ${isAudio ? "M4A" : `MP4 (${hlsStream.variant.quality})`}...`;
-        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
 
         const [remuxResult, muteStats] = await Promise.all([
           remuxHlsStream({
@@ -543,14 +566,14 @@ dp.onNewMessage(async (msg) => {
           const actualGB = (remuxResult.sizeBytes / (1024 * 1024 * 1024)).toFixed(2);
           statuses[i] =
             `❌ [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — превышен лимит размера (${actualGB} GB > ${maxGB} GB)`;
-          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
           continue;
         }
 
         // Этап 3: Отправка в Telegram
         statuses[i] =
           `⬆️ [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — загрузка в Telegram (${remuxResult.sizeMB} MB)...`;
-        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
 
         try {
           await tg.sendTyping(msg.chat.id, isAudio ? "upload_voice" : "upload_video");
@@ -561,7 +584,7 @@ dp.onNewMessage(async (msg) => {
           hls: hlsStream,
           muteStats,
           remux: remuxResult,
-          vodId: parsedVod.vodId,
+          vodId,
           vodUrl,
           index: currentIndex,
           total: totalRanges,
@@ -615,7 +638,7 @@ dp.onNewMessage(async (msg) => {
           `❌ [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — ошибка: ${errDescription}`;
       } finally {
         await safeDeleteFile(outPath);
-        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses));
+        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
       }
     }
 
@@ -648,7 +671,7 @@ dp.onNewMessage(async (msg) => {
       }
     }
 
-    await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(parsedVod.vodId, statuses, finalHeader));
+    await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses, finalHeader));
   } catch (fatalError: any) {
     logger.error("💥 [Fatal Handler Error]:", fatalError);
     const fatalText = `❌ <b>Критическая ошибка:</b> <code>${fatalError?.message || fatalError}</code>`;

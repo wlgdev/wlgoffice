@@ -138,10 +138,41 @@ bun test
 !клип https://vkvideo.ru/live-46211765_456252477 1:00:00 - 1:10:00
 ```
 
+### Клип с live-эфира (алиас канала)
+
+Вместо ссылки можно указать канал — бот сам найдёт VOD текущей трансляции и нарежет клип по таймкодам **от начала эфира**:
+
+```
+!клип <канал> <интервал> [<интервал> ...] [<качество> ...]
+```
+
+```
+!клип влг 10:00 - 12:30
+!клип табула 1:00:00 - 1:10:00 720p
+!аудио wlg 30:00 - 31:00
+!транскрипт табула 5:00 - 15:00
+```
+
+| Алиас            | Twitch-канал    |
+| ---------------- | --------------- |
+| `влг`, `wlg`, `welovegames` | `welovegames` |
+| `табула`, `tabula` | `tabula`      |
+
+Алиасы задаются переменной `TWITCH_CHANNELS` (формат: `логин:алиас1,алиас2;логин2:алиас3`), дефолты — `влг/wlg/welovegames` и `табула/tabula`.
+
+Как это работает (`src/twitch.ts`):
+
+1. `Twitch.vods("TIME", 1, "ARCHIVE")` — последний архив канала;
+2. `Twitch.streamInfo()` — состояние стрима;
+3. если канал онлайн и `broadcast_id` последнего архива совпал со `stream id` из `streamInfo` — берём `vod id` этого архива и качаем его HLS-манифест (сегменты live-VOD доступны с начала эфира).
+
+Если канал не в эфире или архив текущей трансляции ещё не создан — бот отвечает ошибкой и ничего не качает. Явная ссылка на VOD всегда важнее алиаса.
+
 Правила парсинга (`src/utils.ts`):
 
 - VOD ID — первое совпадение `twitch.tv/videos/<digits>` (протокол и `www.`/`m.` опциональны);
 - VK ID — первое совпадение `vkvideo.ru|vk.com|vk.ru/(video|live|clip)?<owner>_<id>`, `owner` нормализуется к виду с ведущим минусом (требование VK API);
+- алиас канала — первое совпадение `влг`/`wlg`/`welovegames`/`табула`/`tabula` как отдельного слова (границы строгие: `wlgx` не подходит); если в тексте есть ссылка — она важнее алиаса;
 - интервалы — паттерн `<время> - <время>`, время в формате `СС` / `ММ:СС` / `ЧЧ:ММ:СС`, разделитель — `-`, `–`, `—`, `~` и др.;
 - качества — все совпадения `<цифры>p` (`720p`, `1080p60` матчится на `720p`/`1080p` либо на высоту из `resolution`), порядок сохраняется, дубли схлопываются; если качеств нет — берётся максимальное из манифеста; если указано несколько — берётся первое найденное в манифесте.
 
@@ -266,6 +297,7 @@ bun --env-file=.env.development src/main.ts  # dev (скрипт bun run start)
 | `GROQ_APIKEY` | нет       | —                   | Ключ Groq для `!транскрипт` (Whisper). Без него режим отдаёт ошибку, бот работает |
 | `GEMINI_APIKEY` | нет     | —                   | Ключ Gemini для причёсывания текста. Без него отдаётся сырая расшифровка |
 | `PROXY`     | нет         | —                   | Любое непустое значение включает прокси `boostyflare` для Twitch metadata                  |
+| `TWITCH_CHANNELS` | нет   | `влг/wlg/welovegames`, `табула/tabula` | Алиасы Twitch-каналов: `логин:алиас1,алиас2;логин2:алиас3`             |
 | `STORAGE`   | нет         | `db/session.sqlite` | Путь к SQLite-сессии mtcute                                                                |
 | `TMP_DIR`   | нет         | `tmp`               | Каталог временных MP4                                                                      |
 
@@ -290,6 +322,6 @@ bun --env-file=.env.development src/main.ts  # dev (скрипт bun run start)
 - [scraperator](https://jsr.io/@shevernitskiy/scraperator) — Twitch metadata/HLS (`Twitch.vodHLSMetadata`)
 - [Twitch VOD / HLS](https://dev.twitch.tv/docs/video-broadcast/) — устройство VOD и манифестов
 - [FFmpeg docs](https://ffmpeg.org/documentation.html) — ремукс (`-c copy`, `-movflags +faststart`), поиск `ffmpeg.exe` — `src/ffmpeg.ts: resolveFfmpegBinary`
-- Структура кода: `src/main.ts` (вход) → `src/telegram.ts` (хендлеры `!клип`/`!аудио`/`!транскрипт`, статусы, загрузка) → `src/hls.ts` (общее ядро: варианты, сегменты, unmute) + `src/vk.ts` (VK-специфика) → `src/ffmpeg.ts` (ремукс в файл/стрим) → `src/transcribe.ts` (Whisper + Gemini, лимиты Groq) → `src/utils.ts` (парсинг команды) → `src/config.ts` (env/flags) → `src/logger.ts`
+- Структура кода: `src/main.ts` (вход) → `src/telegram.ts` (хендлеры `!клип`/`!аудио`/`!транскрипт`, статусы, загрузка) → `src/hls.ts` (общее ядро: варианты, сегменты, unmute) + `src/vk.ts` (VK-специфика) + `src/twitch.ts` (VOD текущего эфира по алиасу канала) → `src/ffmpeg.ts` (ремукс в файл/стрим) → `src/transcribe.ts` (Whisper + Gemini, лимиты Groq) → `src/utils.ts` (парсинг команды) → `src/config.ts` (env/flags) → `src/logger.ts`
 
 <p align="right">(<a href="#top">back to top</a>)</p>
