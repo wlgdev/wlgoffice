@@ -66,6 +66,29 @@ describe("utils (trust boundary: текст из Telegram)", () => {
     expect(r).toHaveLength(1);
     expect([r[0]!.startSeconds, r[0]!.endSeconds]).toEqual([600, 750]);
   });
+  test("parseTimeRanges принимает секунды", () => {
+    const plain = parseTimeRanges("100-234");
+    expect(plain).toHaveLength(1);
+    expect([plain[0]!.rawStart, plain[0]!.rawEnd]).toEqual(["100", "234"]);
+    expect([plain[0]!.startSeconds, plain[0]!.endSeconds]).toEqual([100, 234]);
+
+    // разное тире и пробелы
+    expect(parseTimeRanges("100 – 234")).toHaveLength(1);
+    expect(parseTimeRanges("100 ~ 234")).toHaveLength(1);
+
+    // смешение форматов
+    const mixed = parseTimeRanges("100 - 2:30");
+    expect(mixed).toHaveLength(1);
+    expect([mixed[0]!.startSeconds, mixed[0]!.endSeconds]).toEqual([100, 150]);
+
+    const mixed2 = parseTimeRanges("10:00 - 234");
+    expect(mixed2).toHaveLength(1);
+    expect([mixed2[0]!.startSeconds, mixed2[0]!.endSeconds]).toEqual([600, 234]);
+  });
+  test("parseTimeRanges не матчит цифры из ссылок", () => {
+    expect(parseTimeRanges("!клип https://twitch.tv/videos/1234567890")).toHaveLength(0);
+    expect(parseTimeRanges("!клип https://vkvideo.ru/video-46211765_456252477")).toHaveLength(0);
+  });
   test("parseVkVideoId", () => {
     expect(parseVkVideoId("!клип https://vkvideo.ru/video-46211765_456252477 10:00 - 12:30")).toBe(
       "-46211765_456252477",

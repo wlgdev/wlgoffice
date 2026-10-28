@@ -8,7 +8,8 @@
     "build:windows": "bun build --env-file=.env.development --env=inline --compile --target=bun-windows-x64 ./src/main.ts --outfile dist/wlgofficebot.exe",
     "build:linux": "bun build --env-file=.env --env=inline --compile --target=bun-linux-x64 ./src/main.ts --outfile dist/wlgofficebot",
     "build:linux-arm": "bun build --env-file=.env --env=inline --compile --target=bun-linux-arm64 ./src/main.ts --outfile dist/wlgofficebot-arm",
-    "upload": "bun build:linux && bun E:/deploy.ts ./dist/wlgofficebot /opt/bots/wlgoffice/wlgofficebot wlgoffice"
+    "upload": "bun build:linux && bun E:/deploy.ts ./dist/wlgofficebot /opt/bots/wlgoffice/wlgofficebot wlgoffice",
+    "format": "bun fmt"
   },
   "dependencies": {
     "@mtcute/bun": "^0.32.0",

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 
-import { html, InputMedia, TelegramClient } from "@mtcute/bun";
+import { BotKeyboard, html, InputMedia, TelegramClient } from "@mtcute/bun";
 import { Dispatcher, type MessageContext } from "@mtcute/dispatcher";
 
 import config from "./config";
@@ -51,6 +51,31 @@ const dp = Dispatcher.for(tg);
 dp.onError((err, update) => {
   logger.error("⚠️ [Dispatcher Error]:", err, "Update:", update);
   return true;
+});
+
+dp.onCallbackQuery(async (q) => {
+  if (q.dataStr !== DELETE_CALLBACK_DATA) return;
+
+  const chatId = q.chat.id;
+  const allowed = config.telegram.chatIds.includes(Number(chatId)) || config.interop.chatIds.includes(Number(chatId));
+  if (!allowed) {
+    await q.answer({ text: "🚫 Этот чат не разрешён", alert: true });
+    return;
+  }
+
+  try {
+    await tg.deleteMessagesById(chatId, [q.messageId]);
+    logger.info(
+      `[Delete] ${q.user.id} (@${q.user.username ?? "no-username"}) удалил пост ${q.messageId} в чате ${chatId}`,
+    );
+    await q.answer({ text: "🗑 Удалено" });
+  } catch (e: any) {
+    const errorStr = String(e?.message || e);
+    if (!errorStr.includes("MESSAGE_ID_INVALID")) {
+      logger.warn("[Callback Delete Error]:", errorStr);
+    }
+    await q.answer({ text: "❌ Не удалось удалить", alert: true }).catch(() => {});
+  }
 });
 
 // ─── Хелперы ─────────────────────────────────────────────────
@@ -115,6 +140,16 @@ async function safeDeleteFile(filePath: string) {
   } catch (err) {
     logger.warn(`[Cleanup] Failed to delete file "${filePath}":`, err);
   }
+}
+
+const DELETE_CALLBACK_DATA = "del:media";
+
+/**
+ * Кнопка «Удалить» для итоговых постов (видео/аудио/транскрипт).
+ * Нажать её может любой участник разрешённого чата.
+ */
+function buildDeleteKeyboard() {
+  return BotKeyboard.inline([[BotKeyboard.callback("🗑 Удалить", DELETE_CALLBACK_DATA)]]);
 }
 
 async function safeDeleteStatus(chatId: number | string, messageId: number) {
@@ -683,7 +718,7 @@ dp.onNewMessage(async (msg) => {
                 }),
               ),
             }),
-            { replyTo: interop || isChannelChat(msg) ? undefined : msg.id },
+            { replyMarkup: buildDeleteKeyboard(), replyTo: interop || isChannelChat(msg) ? undefined : msg.id },
           );
 
           totalDurationSec += remuxResult.duration;
@@ -788,7 +823,10 @@ dp.onNewMessage(async (msg) => {
                 // duration: Math.round(remuxResult.duration),
                 supportsStreaming: true,
               }),
-          { replyTo: interop || isChannelChat(msg) ? undefined : msg.id },
+          {
+            replyMarkup: buildDeleteKeyboard(),
+            replyTo: interop || isChannelChat(msg) ? undefined : msg.id,
+          },
         );
 
         // Обновляем статистику

@@ -71,12 +71,14 @@ export function timeToSeconds(timeStr: string): number | null {
 }
 
 /**
- * Парсит временные диапазоны из текста
+ * Парсит временные диапазоны из текста.
+ * Поддерживаются пары «ММ:СС», «ЧЧ:ММ:СС» или просто секунды («100»),
+ * а также их смешения («100 - 1:30», «10:00 - 234»), тире разного рода и с пробелами/без.
  * @param text Исходное сообщение
  * @returns Массив найденных интервалов с переводом в секунды
  */
 export function parseTimeRanges(text: string): ParsedTimeRange[] {
-  const timeRangeRegex = /\b(\d{1,2}(?::\d{1,2}){0,2})\s*[-‐‑‒–—―−~]\s*(\d{1,2}(?::\d{1,2}){0,2})\b/g;
+  const timeRangeRegex = /\b(\d{1,2}(?::\d{1,2}){1,2}|\d{1,5})\s*[-‐‑‒–—―−~]\s*(\d{1,2}(?::\d{1,2}){1,2}|\d{1,5})\b/g;
 
   const results: ParsedTimeRange[] = [];
   let match: RegExpExecArray | null;
