@@ -41,6 +41,7 @@
     <li>
       <a href="#%EF%B8%8F-how-to-use">⚠️ How to use</a>
       <ul>
+        <li><a href="#interop-%D1%81-%D0%B2%D0%BD%D0%B5%D1%88%D0%BD%D0%B8%D0%BC%D0%B8-%D0%B1%D0%BE%D1%82%D0%B0%D0%BC%D0%B8">🤝 Интероп с внешними ботами</a></li>
         <li><a href="#possible-exceptions">Possible Exceptions</a></li>
       </ul>
     </li>
@@ -71,6 +72,7 @@ Telegram-бот, который по команде `!клип` вырезает
 - очередь из нескольких клипов в одном сообщении со статус-постом и live-прогрессом;
 - лимиты: длительность клипа до 30 минут, размер файла до 4 ГБ;
 - работа в группах, супергруппах и каналах (в каналах — без reply, обычным сообщением);
+- интероп-запросы от внешних ботов: payload с источником, целевым чатом и автором запроса;
 - опциональный прокси для Twitch API/metadata и Twitch OAuth-токен.
 
 <p align="right">(<a href="#top">back to top</a>)</p>
@@ -239,6 +241,45 @@ bun test
 - временные файлы — `tmp/clip_<vod>_<start>_<end>.mp4` (+ `.in.tmp` на время ремукса), удаляются в `finally` после каждого клипа;
 - сессия Telegram MTProto — `db/session.sqlite` (по умолчанию).
 
+### 🤝 Интероп с внешними ботами
+
+Бот умеет принимать заявки на клип от другого бота (например, Twitch-бота, который ловит `!клип` в чате стримера). Заявка приходит в личку бота и содержит блок payload:
+
+```
+!клип {from:"twitch";to:"182834";username:"Nikitawrik"} 05:00 - 10:00 480p
+```
+
+| Поле      | Обязателен | Значение                                                                                             |
+| --------- | ---------- | ---------------------------------------------------------------------------------------------------- |
+| `from`    | да         | Платформа-источник: `twitch` (VOD текущего эфира) или `vk` (нужна ссылка на видео)                     |
+| `to`      | да         | Chat id получателя — туда уходят статус-сообщение и сами клипы                                         |
+| `username`| нет        | Никнейм инициатора запроса — попадает в статус и в подпись клипа                                        |
+| `channel` | нет        | Логин Twitch-канала, из которого берётся live-VOD. Фолбэк: `INTEROP_TWITCH_CHANNEL`, затем `welovegames` |
+
+Парсер (`src/interop.ts`) терпим к записи: разделитель `;` или `,`, ключи в кавычках или без, значения в кавычках или без (тогда только числа). Строгий JSON тоже подходит:
+
+```
+!клип {"from":"twitch","to":"182834","username":"Nikitawrik","channel":"welovegames"} 05:00 - 10:00 480p
+```
+
+Как обрабатывается заявка:
+
+1. запрос принимается только из лички бота (`chatType` = private) — в группах и каналах игнорируется;
+2. `to` должен быть числом и входить в allowlist `INTEROP_CHAT_IDS` (по умолчанию — `CHAT_ID`), иначе бот отвечает отказом и ничего никуда не отправляет;
+3. блок payload вырезается из текста, дальше команда разбирается как обычно: таймкоды, качество, алиасы;
+4. `from:"twitch"` без ссылки на VOD → бот сам находит live-VOD канала (`channel` из payload → `INTEROP_TWITCH_CHANNEL` → `welovegames`) и нарезает клип;
+5. статус-пост и готовые клипы уходят в чат `to` (в канал реплаем не отвечаем — чужой чат), отправителю в личку приходит короткий аск с итогом.
+
+В статус-посте и в подписи клипа видно, откуда пришёл запрос и кто его инициировал:
+
+```
+📥 Запрос принят!
+🔗 Инициировано из: twitch · username: Nikitawrik
+📺 Канал: welovegames | VOD: 123456
+```
+
+Таймкоды в интероп-запросе считаются от начала эфира, как и в обычном `!клип` по алиасу.
+
 ### Possible Exceptions
 
 | Сообщение в статусе                                                      | Причина                                                                                                                       |
@@ -256,6 +297,7 @@ bun test
 | `❌ ... — ошибка: ...` (до 200 символов)                                 | ошибка сети/HLS/FFmpeg/Telegram на этом клипе, остальные продолжают обрабатываться                                            |
 | `❌ Критическая ошибка: ...`                                             | упал весь хендлер — дописывается в статус-пост (или отдельным сообщением, если статус не был создан)                          |
 | `CHAT_ADMIN_REQUIRED` в логах                                            | боту не дали админку в канале / добавили не того бота                                                                         |
+| `messages.editMessage resulted in a flood wait` в логах                    | Telegram режет слишком частые правки одного сообщения; mtcute ретраит сам, бот дополнительно не правит статус чаще раза в 1.5 с и не шлёт дубликаты |
 | `API_ID / API_HASH / BOT_TOKEN / CHAT_ID is not defined` на старте       | не заданы обязательные env (процесс завершается с кодом 1)                                                                    |
 | `FFmpeg binary ("ffmpeg[.exe]") not found`                               | бинарь не найден рядом с exe / в корне / в PATH (`src/ffmpeg.ts: resolveFfmpegBinary`)                                        |
 
@@ -298,6 +340,8 @@ bun --env-file=.env.development src/main.ts  # dev (скрипт bun run start)
 | `GEMINI_APIKEY` | нет     | —                   | Ключ Gemini для причёсывания текста. Без него отдаётся сырая расшифровка |
 | `PROXY`     | нет         | —                   | Любое непустое значение включает прокси `boostyflare` для Twitch metadata                  |
 | `TWITCH_CHANNELS` | нет   | `влг/wlg/welovegames`, `табула/tabula` | Алиасы Twitch-каналов: `логин:алиас1,алиас2;логин2:алиас3`             |
+| `INTEROP_CHAT_IDS` | нет  | `CHAT_ID` | Чаты, куда бот вправе отправлять клипы по интероп-запросам (список через запятую) |
+| `INTEROP_TWITCH_CHANNEL` | нет | `welovegames` | Twitch-канал для интероп-запросов, если в payload нет `channel`      |
 | `STORAGE`   | нет         | `db/session.sqlite` | Путь к SQLite-сессии mtcute                                                                |
 | `TMP_DIR`   | нет         | `tmp`               | Каталог временных MP4                                                                      |
 
@@ -309,9 +353,10 @@ bun --env-file=.env.development src/main.ts  # dev (скрипт bun run start)
 
 ```
 --api-id=<id> --api-hash=<hash> --bot-token=<token> --chat-id=<id1,id2> --proxy --oauth=<token>
+--interop-chat-id=<id1,id2> --interop-twitch-channel=<login>
 ```
 
-`--proxy` — без значения (включает тот же `boostyflare` прокси). Невалидный набор (`API_ID` не число, пустой `CHAT_ID` и т.п.) — ошибка в консоль и `process.exit(1)`.
+`--proxy` — без значения (включает тот же `boostyflare` прокси). `--interop-chat-id` — allowlist чатов для интероп-запросов, `--interop-twitch-channel` — канал по умолчанию для них. Невалидный набор (`API_ID` не число, пустой `CHAT_ID` и т.п.) — ошибка в консоль и `process.exit(1)`.
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 
@@ -322,6 +367,6 @@ bun --env-file=.env.development src/main.ts  # dev (скрипт bun run start)
 - [scraperator](https://jsr.io/@shevernitskiy/scraperator) — Twitch metadata/HLS (`Twitch.vodHLSMetadata`)
 - [Twitch VOD / HLS](https://dev.twitch.tv/docs/video-broadcast/) — устройство VOD и манифестов
 - [FFmpeg docs](https://ffmpeg.org/documentation.html) — ремукс (`-c copy`, `-movflags +faststart`), поиск `ffmpeg.exe` — `src/ffmpeg.ts: resolveFfmpegBinary`
-- Структура кода: `src/main.ts` (вход) → `src/telegram.ts` (хендлеры `!клип`/`!аудио`/`!транскрипт`, статусы, загрузка) → `src/hls.ts` (общее ядро: варианты, сегменты, unmute) + `src/vk.ts` (VK-специфика) + `src/twitch.ts` (VOD текущего эфира по алиасу канала) → `src/ffmpeg.ts` (ремукс в файл/стрим) → `src/transcribe.ts` (Whisper + Gemini, лимиты Groq) → `src/utils.ts` (парсинг команды) → `src/config.ts` (env/flags) → `src/logger.ts`
+- Структура кода: `src/main.ts` (вход) → `src/telegram.ts` (хендлеры `!клип`/`!аудио`/`!транскрипт`, статусы, загрузка) → `src/hls.ts` (общее ядро: варианты, сегменты, unmute) + `src/vk.ts` (VK-специфика) + `src/twitch.ts` (VOD текущего эфира по алиасу канала) → `src/ffmpeg.ts` (ремукс в файл/стрим) → `src/transcribe.ts` (Whisper + Gemini, лимиты Groq) → `src/utils.ts` (парсинг команды) + `src/interop.ts` (payload внешних ботов) → `src/config.ts` (env/flags) → `src/logger.ts`
 
 <p align="right">(<a href="#top">back to top</a>)</p>

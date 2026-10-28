@@ -23,6 +23,7 @@ import {
 import { parseVkMasterPlaylist } from "./vk";
 import { remuxHlsStream } from "./ffmpeg";
 import { pickLiveVod } from "./twitch";
+import { parseInteropPayload, stripInteropPayload } from "./interop";
 import { formatRetryAfter, FALLBACK_STT_MODEL, GROQ_MAX_FILE_BYTES, PRIMARY_STT_MODEL } from "./transcribe";
 import type { TwitchStreamInfo, TwitchVodInfo } from "@shevernitskiy/scraperator";
 
@@ -343,6 +344,66 @@ describe("алиасы Twitch-каналов (влг/wlg → welovegames, таб
     const parsed = parseVodMessage("!клип просто текст", aliases);
     expect(parsed.platform).toBeNull();
     expect(parsed.channel).toBeNull();
+  });
+});
+
+describe("интероп-запросы от внешних ботов", () => {
+  const command = '!клип {from:"twitch";to:"182834";username:"Nikitawrik"} 05:00 - 10:00 480p';
+
+  test("разбирает payload в свободном формате", () => {
+    const payload = parseInteropPayload(command);
+    expect(payload).not.toBeNull();
+    expect(payload!.from).toBe("twitch");
+    expect(payload!.to).toBe(182834);
+    expect(payload!.username).toBe("Nikitawrik");
+    expect(payload!.channel).toBeNull();
+  });
+
+  test("строгий JSON тоже принимается", () => {
+    const payload = parseInteropPayload(
+      '!клип {"from":"twitch","to":"182834","username":"Nikitawrik","channel":"welovegames"} 05:00 - 10:00',
+    );
+    expect(payload!.from).toBe("twitch");
+    expect(payload!.to).toBe(182834);
+    expect(payload!.username).toBe("Nikitawrik");
+    expect(payload!.channel).toBe("welovegames");
+  });
+
+  test("chat id канала — с минусом", () => {
+    expect(parseInteropPayload('!клип {from:"twitch";to:"-1001234567890"} 05:00 - 10:00')!.to).toBe(
+      -1001234567890,
+    );
+  });
+
+  test("to не число → null (запрос отклоняется валидацией)", () => {
+    expect(parseInteropPayload('!клип {from:"twitch";to:"abc"} 05:00 - 10:00')!.to).toBeNull();
+  });
+
+  test("обычная команда без payload → null", () => {
+    expect(parseInteropPayload("!клип https://twitch.tv/videos/123 05:00 - 10:00")).toBeNull();
+    expect(parseInteropPayload("!клип влг 05:00 - 10:00")).toBeNull();
+  });
+
+  test("блок без полей from/to → не интероп", () => {
+    expect(parseInteropPayload('!клип {note:"что-то"} 05:00 - 10:00')).toBeNull();
+  });
+
+  test("stripInteropPayload вырезает блок, таймкоды и качество читаются", () => {
+    const stripped = stripInteropPayload(command);
+    expect(stripped).not.toContain("{");
+    expect(stripped).not.toContain("182834");
+
+    const parsed = parseVodMessage(stripped, {});
+    expect(parsed.ranges).toHaveLength(1);
+    expect([parsed.ranges[0]!.startSeconds, parsed.ranges[0]!.endSeconds]).toEqual([300, 600]);
+    expect(parsed.qualities).toEqual(["480p"]);
+  });
+
+  test("цифры из payload не ломают разбор интервалов", () => {
+    const parsed = parseVodMessage(stripInteropPayload(command), {});
+    expect(parsed.ranges).toHaveLength(1);
+    expect(parsed.ranges[0]!.rawStart).toBe("05:00");
+    expect(parsed.ranges[0]!.rawEnd).toBe("10:00");
   });
 });
 

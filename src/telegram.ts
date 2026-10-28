@@ -22,6 +22,7 @@ import {
 import { existsSync } from "node:fs";
 import config from "./config";
 import logger from "./logger";
+import { parseInteropPayload, stripInteropPayload, type InteropPayload } from "./interop";
 
 // ─── 1. Глобальная защита от падений процесса ─────────────────
 
@@ -54,6 +55,42 @@ dp.onError((err, update) => {
 
 function toTelegramHtml(text: string) {
   return html(text.replace(/\r?\n/g, "<br>"));
+}
+
+function escapeHtml(text: string) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Строка «откуда инициирован запрос и кто его отправил» — для статуса и подписи клипа.
+ */
+function buildRequesterLine(interop: InteropPayload | null): string {
+  if (!interop) {
+    return "";
+  }
+  const username = interop.username ? ` · <b>username:</b> ${escapeHtml(interop.username)}` : "";
+  return `🔗 <b>Инициировано из:</b> <b>${escapeHtml(interop.from)}</b>${username}`;
+}
+
+/**
+ * Проверяет интероп-запрос: откуда пришёл, куда можно слать.
+ * Возвращает текст ошибки или null, если запрос корректен.
+ */
+function validateInterop(msg: MessageContext, payload: InteropPayload): string | null {
+  // Peer в личке — это User (type: "user"), в группах и каналах — Chat (type: "chat").
+  if (msg.chat.type !== "user") {
+    return "❌ <b>Интероп-запросы принимаются только в личке бота.</b>";
+  }
+
+  if (payload.to === null) {
+    return "❌ <b>Интероп-запрос:</b> не указан корректный <code>to</code> (chat id получателя).";
+  }
+
+  if (!config.interop.chatIds.includes(payload.to)) {
+    return `❌ <b>Интероп-запрос:</b> чат <code>${payload.to}</code> не разрешён для клипов.`;
+  }
+
+  return null;
 }
 
 /**
@@ -134,14 +171,17 @@ function buildCaption(params: {
   index: number;
   total: number;
   mode: VodMode;
+  interop?: InteropPayload | null;
 }): string {
-  const { range, hls, muteStats, remux, vodId, vodUrl, index, total, mode } = params;
+  const { range, hls, muteStats, remux, vodId, vodUrl, index, total, mode, interop } = params;
 
   // Нумерацию «i/N» показываем в мультизадачах (>1 клипа), одиночный клип — без неё
   const icon = mode === "audio" ? "🎵" : "🎬";
   const label = mode === "audio" ? "Аудио" : "Клип";
   const clipTitle =
     total > 1 ? `${icon} <b>${label} ${index}/${total} [${range.rawStart} - ${range.rawEnd}]</b>` : `${icon} <b>${label} [${range.rawStart} - ${range.rawEnd}]</b>`;
+
+  const requesterLine = interop ? `${buildRequesterLine(interop)}\n` : "";
 
   let muteLine = "";
   if (muteStats.mutedFound > 0) {
@@ -159,6 +199,7 @@ function buildCaption(params: {
 
   return (
     `${clipTitle} (длительность: ${remux.duration}с)\n` +
+    requesterLine +
     qualityLine +
     `📦 <b>Размер:</b> ${remux.sizeMB} MB${muteLine}\n` +
     `⚡ <b>Время обработки:</b> ${(remux.elapsedMs / 1000).toFixed(1)}с\n` +
@@ -209,9 +250,15 @@ function transcriptBadge(stt: SttResult, polish: PolishResult): string {
   return `${model}${warn} · ${quality}`;
 }
 
-function buildStatusMessage(vodId: string, statuses: string[], header?: string): string {
+function buildStatusMessage(
+  vodId: string,
+  statuses: string[],
+  header?: string,
+  subtitle?: string,
+): string {
   const title = header ?? `📥 <b>Обработка VOD <code>${vodId}</code></b>`;
-  return `${title}\n\n${statuses.join("\n")}`;
+  const sub = subtitle ? `${subtitle}\n` : "";
+  return `${title}\n${sub}\n${statuses.join("\n")}`;
 }
 
 /**
@@ -243,6 +290,9 @@ function buildQualityNotFoundStatus(
 dp.onNewMessage(async (msg) => {
   // Контекст для фатального пути: чтобы статус-сообщение не висло на промежуточном этапе.
   let statusCtx: { chatId: number | string; msgId: number; vodId: string; lines: string[] } | undefined;
+  let flushStatusForRequest: ((rawText: string) => Promise<void>) | undefined;
+  let interop: InteropPayload | null = null;
+  let targetChatId: number | string = msg.chat.id;
   try {
     const text = msg.text;
 
@@ -251,11 +301,31 @@ dp.onNewMessage(async (msg) => {
       return;
     }
 
-    if (!config.telegram.chatIds.includes(msg.chat.id)) return;
+    // Интероп-запрос от внешнего бота: !клип {from:"twitch";to:"182834";username:"..."} 05:00 - 10:00 480p
+    interop = text ? parseInteropPayload(text) : null;
+    const cmdText = interop && text ? stripInteropPayload(text) : text;
 
-    const mode = text ? parseVodMode(text) : "video";
+    const mode = cmdText ? parseVodMode(cmdText) : "video";
 
-    if (!text || (!text.startsWith("!клип") && mode === "video")) return;
+    if (!cmdText || (!cmdText.trim().startsWith("!клип") && mode === "video")) return;
+
+    if (interop) {
+      const problem = validateInterop(msg, interop);
+      if (problem) {
+        await answerText(msg, toTelegramHtml(problem));
+        return;
+      }
+      targetChatId = interop.to!;
+    } else if (!config.telegram.chatIds.includes(msg.chat.id)) {
+      return;
+    }
+
+    // По интероп-запросу статус и клипы уходят в целевой чат, а не в чат отправителя.
+    const sendStatus = async (statusText: ReturnType<typeof toTelegramHtml>) =>
+      interop ? tg.sendText(targetChatId, statusText) : answerText(msg, statusText);
+
+    // Ошибка в целевом чате тоже должна показывать, откуда и от кого пришёл запрос.
+    const errorStatus = (body: string) => (interop ? `${body}\n${buildRequesterLine(interop)}` : body);
 
     const isAudio = mode === "audio";
     const isTranscript = mode === "transcript";
@@ -263,27 +333,69 @@ dp.onNewMessage(async (msg) => {
     // 1. Парсинг команды
     let parsedVod;
     try {
-      parsedVod = parseVodMessage(text, config.twitch.channels);
+      parsedVod = parseVodMessage(cmdText, config.twitch.channels);
     } catch (e: any) {
-      await answerText(msg, toTelegramHtml(`❌ <b>Ошибка парсинга команды:</b> <code>${e?.message || e}</code>`));
+      await sendStatus(
+        toTelegramHtml(errorStatus(`❌ <b>Ошибка парсинга команды:</b> <code>${e?.message || e}</code>`)),
+      );
       return;
     }
 
-    if (!parsedVod.platform) {
-      await answerText(
-        msg,
+    if (interop) {
+      const from = interop.from;
+
+      if (from !== "twitch" && from !== "vk") {
+        await sendStatus(
+          toTelegramHtml(
+            errorStatus(`❌ <b>Интероп:</b> источник <code>${escapeHtml(from)}</code> не поддерживается.`),
+          ),
+        );
+        return;
+      }
+
+      if (from === "vk" && parsedVod.platform !== "vk") {
+        await sendStatus(
+          toTelegramHtml(errorStatus("❌ <b>Интероп:</b> для источника <code>vk</code> нужна ссылка на видео.")),
+        );
+        return;
+      }
+
+      if (from === "twitch") {
+        if (parsedVod.platform === "vk") {
+          await sendStatus(
+            toTelegramHtml(
+              errorStatus("❌ <b>Интероп:</b> источник <code>twitch</code>, но в команде ссылка на VK Видео."),
+            ),
+          );
+          return;
+        }
+
+        const channel = interop.channel ?? config.interop.twitchChannel ?? DEFAULT_CHANNEL;
+        parsedVod = {
+          ...parsedVod,
+          platform: "twitch",
+          channel: parsedVod.channel ?? channel,
+        };
+      }
+    } else if (!parsedVod.platform) {
+      await sendStatus(
         toTelegramHtml(
-          "❌ <b>Ошибка:</b> не удалось распознать ссылку (Twitch VOD или VK Видео) " +
-            "или канал (<code>влг</code>/<code>wlg</code>, <code>табула</code>/<code>tabula</code>).",
+          errorStatus(
+            "❌ <b>Ошибка:</b> не удалось распознать ссылку (Twitch VOD или VK Видео) " +
+              "или канал (<code>влг</code>/<code>wlg</code>, <code>табула</code>/<code>tabula</code>).",
+          ),
         ),
       );
       return;
     }
 
     if (!parsedVod.ranges.length) {
-      await answerText(
-        msg,
-        toTelegramHtml("❌ <b>Ошибка:</b> не найдены временные интервалы (например: <code>10:00 - 12:30</code>)."),
+      await sendStatus(
+        toTelegramHtml(
+          errorStatus(
+            "❌ <b>Ошибка:</b> не найдены временные интервалы (например: <code>10:00 - 12:30</code>).",
+          ),
+        ),
       );
       return;
     }
@@ -302,7 +414,7 @@ dp.onNewMessage(async (msg) => {
           e instanceof ChannelOfflineError
             ? `Канал <code>${channelName}</code> сейчас не в эфире — клипить нечего.`
             : `Не удалось найти VOD текущего эфира канала <code>${channelName}</code>: ${e?.message || e}`;
-        await answerText(msg, toTelegramHtml(`❌ <b>Ошибка:</b> ${reason}`));
+        await sendStatus(toTelegramHtml(errorStatus(`❌ <b>Ошибка:</b> ${reason}`)));
         return;
       }
 
@@ -356,8 +468,11 @@ dp.onNewMessage(async (msg) => {
       ? `🌐 Источник: <b>VK Видео</b> | Видео: <code>${vodId}</code>\n`
       : `📺 Канал: <b>${channelName}</b> | VOD: <code>${vodId}</code>\n`;
 
+    const requesterLine = interop ? `${buildRequesterLine(interop)}\n` : "";
+
     const initialText =
       `📥 <b>Запрос принят!</b>\n` +
+      requesterLine +
       sourceLine +
       qualityLine +
       `⏱ ${isTranscript ? "Фрагментов" : "Клипов"} в очереди: <b>${totalRanges}</b>\n\n` +
@@ -367,7 +482,7 @@ dp.onNewMessage(async (msg) => {
 
     let statusMsg;
     try {
-      statusMsg = await answerText(msg, toTelegramHtml(initialText));
+      statusMsg = await sendStatus(toTelegramHtml(initialText));
     } catch (e) {
       if (String(e).includes("CHAT_ADMIN_REQUIRED")) {
         logger.error(
@@ -376,15 +491,84 @@ dp.onNewMessage(async (msg) => {
         );
       }
       logger.error("Не удалось отправить стартовое сообщение в чат:", e);
+      if (interop) {
+        try {
+          await answerText(
+            msg,
+            toTelegramHtml(`❌ <b>Не удалось отправить статус в чат <code>${targetChatId}</code>.</b>`),
+          );
+        } catch {}
+      }
       return;
     }
 
     const chatId = statusMsg.chat.id;
     const statusMsgId = statusMsg.id;
 
+    // Telegram режет слишком частые правки одного сообщения (flood wait на editMessage),
+    // поэтому одинаковые правки пропускаем, а разные — не чаще раза в MIN_STATUS_EDIT_MS.
+    const MIN_STATUS_EDIT_MS = 1500;
+    let lastEditAt = 0;
+    let lastEditText = "";
+    let pendingText: string | null = null;
+    let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const applyStatus = async (rawText: string) => {
+      pendingText = null;
+      lastEditText = rawText;
+      lastEditAt = Date.now();
+      await safeUpdateStatus(chatId, statusMsgId, rawText);
+    };
+
+    const applyPending = async () => {
+      if (pendingText === null) return;
+      await applyStatus(pendingText);
+    };
+
+    const scheduleStatus = (rawText: string) => {
+      if (rawText === lastEditText || rawText === pendingText) return;
+      pendingText = rawText;
+
+      const wait = MIN_STATUS_EDIT_MS - (Date.now() - lastEditAt);
+      if (wait <= 0) {
+        void applyPending();
+      } else if (!pendingTimer) {
+        pendingTimer = setTimeout(() => {
+          pendingTimer = null;
+          void applyPending();
+        }, wait);
+      }
+    };
+
+    /** Правка «здесь и сейчас» — для финального статуса, его нельзя откладывать. */
+    const flushStatus = async (rawText: string) => {
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        pendingTimer = null;
+      }
+      if (rawText === lastEditText && pendingText === null) return;
+      await applyStatus(rawText);
+    };
+
+    const dropPendingStatus = () => {
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        pendingTimer = null;
+      }
+      pendingText = null;
+    };
+
+    flushStatusForRequest = flushStatus;
+
     const statuses: string[] = parsedVod.ranges.map((r) => `<code>${r.rawStart} - ${r.rawEnd}</code>`);
     statusCtx = { chatId, msgId: statusMsgId, vodId, lines: statuses };
     let successCount = 0;
+
+    // Статус-пост перезаписывается на каждом шаге, поэтому строку «инициировано из …»
+    // надо возвращать в каждую редакцию, а не только в первое сообщение.
+    const requesterSubtitle = interop ? buildRequesterLine(interop) : undefined;
+    const statusMessage = (lines: string[], header?: string) =>
+      buildStatusMessage(vodId, lines, header, requesterSubtitle);
 
     // Счётчики для итоговой статистики
     let totalDurationSec = 0;
@@ -412,7 +596,7 @@ dp.onNewMessage(async (msg) => {
       ) {
         statuses[i] =
           `❌ [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — некорректный интервал`;
-        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
+        scheduleStatus(statusMessage(statuses));
         continue;
       }
 
@@ -425,7 +609,7 @@ dp.onNewMessage(async (msg) => {
         const requestedMinutes = (clipDuration / 60).toFixed(1);
         statuses[i] =
           `❌ [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — превышен лимит длительности (${requestedMinutes} мин > ${maxMinutes} мин)`;
-        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
+        scheduleStatus(statusMessage(statuses));
         continue;
       }
 
@@ -439,12 +623,12 @@ dp.onNewMessage(async (msg) => {
 
         try {
           statuses[i] = `🔄 ${tag} — получение аудио...`;
-          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
+          scheduleStatus(statusMessage(statuses));
 
           const hlsStream = await fetchStream(range.startSeconds, range.endSeconds);
 
           statuses[i] = `⚙️ ${tag} — ремуксинг M4A...`;
-          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
+          scheduleStatus(statusMessage(statuses));
 
           const remuxResult = await remuxHlsStream({
             stream: hlsStream.stream,
@@ -464,7 +648,7 @@ dp.onNewMessage(async (msg) => {
           }
 
           statuses[i] = `📝 ${tag} — распознавание речи (${preferTurbo ? "Turbo" : "V3"})...`;
-          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
+          scheduleStatus(statusMessage(statuses));
 
           const stt = await transcribeAudio(Bun.file(audioPath), remuxResult.duration, preferTurbo);
           if (stt.model === FALLBACK_STT_MODEL) {
@@ -473,7 +657,7 @@ dp.onNewMessage(async (msg) => {
           }
 
           statuses[i] = `✨ ${tag} — причесывание текста...`;
-          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
+          scheduleStatus(statusMessage(statuses));
 
           const polish = await polishTranscript(stt.text);
           if (polish.polished) transcriptPolishedCount++;
@@ -481,14 +665,14 @@ dp.onNewMessage(async (msg) => {
           await Bun.write(txtPath, `${polish.text}\n`);
 
           statuses[i] = `⬆️ ${tag} — отправка (${polish.text.length} символов)...`;
-          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
+          scheduleStatus(statusMessage(statuses));
 
           try {
-            await tg.sendTyping(msg.chat.id, "upload_document");
+            await tg.sendTyping(targetChatId, "upload_document");
           } catch {}
 
           await tg.sendMedia(
-            msg.chat.id,
+            targetChatId,
             InputMedia.document(`file:${txtPath}`, {
               caption: toTelegramHtml(
                 buildTranscriptCaption({
@@ -501,7 +685,7 @@ dp.onNewMessage(async (msg) => {
                 }),
               ),
             }),
-            { replyTo: isChannelChat(msg) ? undefined : msg.id },
+            { replyTo: interop || isChannelChat(msg) ? undefined : msg.id },
           );
 
           totalDurationSec += remuxResult.duration;
@@ -528,7 +712,7 @@ dp.onNewMessage(async (msg) => {
         } finally {
           await safeDeleteFile(audioPath);
           await safeDeleteFile(txtPath);
-          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
+          scheduleStatus(statusMessage(statuses));
         }
         continue;
       }
@@ -539,14 +723,14 @@ dp.onNewMessage(async (msg) => {
         // Этап 1: Получение HLS потока
         statuses[i] =
           `🔄 [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — получение HLS...`;
-        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
+        scheduleStatus(statusMessage(statuses));
 
         const hlsStream = await fetchStream(range.startSeconds, range.endSeconds);
 
         // Этап 2: Ремуксинг
         statuses[i] =
           `⚙️ [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — ремуксинг ${isAudio ? "M4A" : `MP4 (${hlsStream.variant.quality})`}...`;
-        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
+        scheduleStatus(statusMessage(statuses));
 
         const [remuxResult, muteStats] = await Promise.all([
           remuxHlsStream({
@@ -566,17 +750,17 @@ dp.onNewMessage(async (msg) => {
           const actualGB = (remuxResult.sizeBytes / (1024 * 1024 * 1024)).toFixed(2);
           statuses[i] =
             `❌ [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — превышен лимит размера (${actualGB} GB > ${maxGB} GB)`;
-          await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
+          scheduleStatus(statusMessage(statuses));
           continue;
         }
 
         // Этап 3: Отправка в Telegram
         statuses[i] =
           `⬆️ [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — загрузка в Telegram (${remuxResult.sizeMB} MB)...`;
-        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
+        scheduleStatus(statusMessage(statuses));
 
         try {
-          await tg.sendTyping(msg.chat.id, isAudio ? "upload_voice" : "upload_video");
+          await tg.sendTyping(targetChatId, isAudio ? "upload_voice" : "upload_video");
         } catch {}
 
         const caption = buildCaption({
@@ -589,10 +773,11 @@ dp.onNewMessage(async (msg) => {
           index: currentIndex,
           total: totalRanges,
           mode,
+          interop,
         });
 
         await tg.sendMedia(
-          msg.chat.id,
+          targetChatId,
           isAudio
             ? InputMedia.audio(`file:${outPath}`, {
                 caption: toTelegramHtml(caption),
@@ -605,7 +790,7 @@ dp.onNewMessage(async (msg) => {
                 // duration: Math.round(remuxResult.duration),
                 supportsStreaming: true,
               }),
-          { replyTo: isChannelChat(msg) ? undefined : msg.id },
+          { replyTo: interop || isChannelChat(msg) ? undefined : msg.id },
         );
 
         // Обновляем статистику
@@ -638,14 +823,23 @@ dp.onNewMessage(async (msg) => {
           `❌ [${currentIndex}/${totalRanges}] <code>${range.rawStart} - ${range.rawEnd}</code> — ошибка: ${errDescription}`;
       } finally {
         await safeDeleteFile(outPath);
-        await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses));
+        scheduleStatus(statusMessage(statuses));
       }
     }
 
     // 4. Финал: всё ок — статусный пост удаляем, чтобы не мусорить в канале.
     // Оставляем его только если есть ошибки — там вся диагностика.
     if (successCount === totalRanges) {
+      dropPendingStatus();
       await safeDeleteStatus(chatId, statusMsgId);
+      if (interop) {
+        await answerText(
+          msg,
+          toTelegramHtml(
+            `✅ <b>Готово:</b> ${successCount} из ${totalRanges} в чат <code>${targetChatId}</code>.`,
+          ),
+        );
+      }
       return;
     }
 
@@ -671,20 +865,46 @@ dp.onNewMessage(async (msg) => {
       }
     }
 
-    await safeUpdateStatus(chatId, statusMsgId, buildStatusMessage(vodId, statuses, finalHeader));
+    await flushStatus(statusMessage(statuses, finalHeader));
+
+    if (interop) {
+      await answerText(
+        msg,
+        toTelegramHtml(
+          `⚠️ <b>Готово частично:</b> ${successCount} из ${totalRanges} в чат <code>${targetChatId}</code>. Подробности — в статусе.`,
+        ),
+      );
+    }
   } catch (fatalError: any) {
     logger.error("💥 [Fatal Handler Error]:", fatalError);
     const fatalText = `❌ <b>Критическая ошибка:</b> <code>${fatalError?.message || fatalError}</code>`;
     if (statusCtx) {
       // Статус уже создан — дописываем ошибку в него, а не оставляем висеть на промежуточном этапе
-      await safeUpdateStatus(
-        statusCtx.chatId,
-        statusCtx.msgId,
-        buildStatusMessage(statusCtx.vodId, [...statusCtx.lines, fatalText], `💥 <b>Обработка прервана</b>`),
+      const fatalStatus = buildStatusMessage(
+        statusCtx.vodId,
+        [...statusCtx.lines, fatalText],
+        `💥 <b>Обработка прервана</b>`,
+        interop ? buildRequesterLine(interop) : undefined,
       );
+      if (flushStatusForRequest) {
+        await flushStatusForRequest(fatalStatus);
+      } else {
+        await safeUpdateStatus(statusCtx.chatId, statusCtx.msgId, fatalStatus);
+      }
     } else {
       try {
         await answerText(msg, toTelegramHtml(fatalText));
+      } catch {}
+    }
+
+    if (interop) {
+      try {
+        await answerText(
+          msg,
+          toTelegramHtml(
+            `💥 <b>Обработка прервана.</b> Подробности — в статусе в чате <code>${targetChatId}</code>.`,
+          ),
+        );
       } catch {}
     }
   }
@@ -699,6 +919,10 @@ export async function startBot() {
     });
     logger.log(`🤖 Connected as: @${self.username || self.displayName}`);
     logger.log(`🤖 Chat-IDs: ${config.telegram.chatIds.join(", ")}`);
+    logger.log(`🤖 Interop chat-IDs: ${config.interop.chatIds.join(", ")}`);
+    if (config.interop.twitchChannel) {
+      logger.log(`🤖 Interop Twitch-канал: ${config.interop.twitchChannel}`);
+    }
     if (config.twitch.oauth) {
       logger.log(`🤖 OAuth: ${config.twitch.oauth}`);
     }

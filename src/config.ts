@@ -74,6 +74,12 @@ for (const arg of process.argv.slice(2)) {
       case "oauth":
         process.env.OAUTH = value;
         break;
+      case "interop-chat-id":
+        process.env.INTEROP_CHAT_IDS = value;
+        break;
+      case "interop-twitch-channel":
+        process.env.INTEROP_TWITCH_CHANNEL = value;
+        break;
     }
   }
 }
@@ -103,6 +109,12 @@ if (storageDir && storageDir !== ".") {
 const tmpDir = process.env.TMP_DIR || "tmp";
 mkdirSync(tmpDir, { recursive: true });
 
+// Чаты, куда бот вправе отправлять клипы по интероп-запросам от внешних ботов.
+// По умолчанию — те же чаты, что и для обычных команд.
+const interopChatIdsRaw = process.env.INTEROP_CHAT_IDS?.trim()
+  ? process.env.INTEROP_CHAT_IDS
+  : process.env.CHAT_ID;
+
 export default {
   telegram: {
     appId: Number(process.env.API_ID),
@@ -110,6 +122,10 @@ export default {
     storage: storagePath,
     botToken: process.env.BOT_TOKEN,
     chatIds: parseChatIds(process.env.CHAT_ID),
+  },
+  interop: {
+    chatIds: parseChatIds(interopChatIdsRaw),
+    twitchChannel: process.env.INTEROP_TWITCH_CHANNEL?.trim() || undefined,
   },
   proxy: process.env.PROXY ? "https://boostyflare.mahahuha5816.workers.dev/" : undefined,
   twitch: {
