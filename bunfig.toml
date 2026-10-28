@@ -1,2 +1,12 @@
 [console]
 depth = 10
+
+[fmt]
+printWidth = 120
+endOfLine = "lf"
+quoteProps = "consistent"
+trailingComma = "all"
+semi = true
+singleQuote = false
+sortImports = true
+sortPackageJson = true

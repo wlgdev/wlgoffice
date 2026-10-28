@@ -17,11 +17,11 @@ export function parseChatIds(raw?: string): number[] {
  * Алиасы Twitch-каналов по умолчанию: алиас → канонический логин канала.
  */
 export const DEFAULT_CHANNEL_ALIASES: Record<string, string> = {
-  "влг": "welovegames",
-  "wlg": "welovegames",
-  "welovegames": "welovegames",
-  "табула": "tabula",
-  "tabula": "tabula",
+  влг: "welovegames",
+  wlg: "welovegames",
+  welovegames: "welovegames",
+  табула: "tabula",
+  tabula: "tabula",
 };
 
 /**
@@ -41,7 +41,10 @@ export function parseChannelAliases(raw?: string): Record<string, string> {
       continue;
     }
 
-    for (const alias of (aliasPart ?? "").split(",").map((a) => a.trim().toLowerCase()).filter(Boolean)) {
+    for (const alias of (aliasPart ?? "")
+      .split(",")
+      .map((a) => a.trim().toLowerCase())
+      .filter(Boolean)) {
       aliases[alias] = login;
     }
 
@@ -111,9 +114,7 @@ mkdirSync(tmpDir, { recursive: true });
 
 // Чаты, куда бот вправе отправлять клипы по интероп-запросам от внешних ботов.
 // По умолчанию — те же чаты, что и для обычных команд.
-const interopChatIdsRaw = process.env.INTEROP_CHAT_IDS?.trim()
-  ? process.env.INTEROP_CHAT_IDS
-  : process.env.CHAT_ID;
+const interopChatIdsRaw = process.env.INTEROP_CHAT_IDS?.trim() ? process.env.INTEROP_CHAT_IDS : process.env.CHAT_ID;
 
 export default {
   telegram: {

@@ -1,5 +1,6 @@
 import { Vk } from "@shevernitskiy/scraperator";
-import { streamFromVariants, type AudioPick, type HlsStreamResult, type StreamVariant } from "./hls";
+
+import { type AudioPick, type HlsStreamResult, streamFromVariants, type StreamVariant } from "./hls";
 import logger from "./logger";
 
 export interface VkClipOptions {
@@ -92,9 +93,7 @@ export async function getVkHlsStream(options: VkClipOptions): Promise<HlsStreamR
   }
 
   logger.info(
-    `VK "${info.title}" (${info.duration}s), вариантов: ${variants
-      .map((v) => v.video || v.resolution)
-      .join(", ")}`,
+    `VK "${info.title}" (${info.duration}s), вариантов: ${variants.map((v) => v.video || v.resolution).join(", ")}`,
   );
 
   if (Number.isFinite(info.duration) && end > info.duration) {

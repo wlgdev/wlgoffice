@@ -1,7 +1,8 @@
-import { randomLong } from "@mtcute/core/utils.js";
-import { tl } from "@mtcute/core";
-import { stat, open } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import { basename } from "node:path";
+
+import { tl } from "@mtcute/core";
+import { randomLong } from "@mtcute/core/utils.js";
 
 /**
  * Свой загрузчик файлов в Telegram.

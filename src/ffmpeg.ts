@@ -1,9 +1,11 @@
-import { join, dirname } from "node:path";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
+
 import { which } from "bun";
+
 import logger from "./logger";
 
 // ─── Types ───────────────────────────────────────────────────
@@ -126,7 +128,16 @@ function setupInputPipe(
 // ─── 1. Сохранение в файл ────────────────────────────────────
 
 export async function remuxHlsStream(options: RemuxToFileOptions): Promise<FfmpegRunResult> {
-  const { stream, outPath, trimStart = 0, trimDuration = 0, ffmpegPath, overwrite = true, verbose = false, audioOnly = false } = options;
+  const {
+    stream,
+    outPath,
+    trimStart = 0,
+    trimDuration = 0,
+    ffmpegPath,
+    overwrite = true,
+    verbose = false,
+    audioOnly = false,
+  } = options;
 
   const startTime = performance.now();
   const ffmpegBin = resolveFfmpegBinary(ffmpegPath);

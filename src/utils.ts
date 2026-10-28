@@ -220,10 +220,7 @@ export function parseChannelAlias(text: string, aliases: Record<string, string>)
   const lower = text.toLowerCase();
 
   for (const [alias, channel] of Object.entries(aliases)) {
-    const pattern = new RegExp(
-      `(^|[^\\p{L}\\p{N}_])${escapeRegExp(alias.toLowerCase())}(?![\\p{L}\\p{N}_])`,
-      "u",
-    );
+    const pattern = new RegExp(`(^|[^\\p{L}\\p{N}_])${escapeRegExp(alias.toLowerCase())}(?![\\p{L}\\p{N}_])`, "u");
 
     if (pattern.test(lower)) {
       return channel;

@@ -1,11 +1,8 @@
 {
   "name": "wlgofficebot",
-  "module": "index.ts",
-  "type": "module",
   "private": true,
-  "devDependencies": {
-    "@types/bun": "^1.4.0"
-  },
+  "type": "module",
+  "module": "index.ts",
   "scripts": {
     "start": "bun --env-file=.env.development src/main.ts",
     "build:windows": "bun build --env-file=.env.development --env=inline --compile --target=bun-windows-x64 ./src/main.ts --outfile dist/wlgofficebot.exe",
@@ -13,13 +10,16 @@
     "build:linux-arm": "bun build --env-file=.env --env=inline --compile --target=bun-linux-arm64 ./src/main.ts --outfile dist/wlgofficebot-arm",
     "upload": "bun build:linux && bun E:/deploy.ts ./dist/wlgofficebot /opt/bots/wlgoffice/wlgofficebot wlgoffice"
   },
-  "peerDependencies": {
-    "typescript": "^7.0.2"
-  },
   "dependencies": {
     "@mtcute/bun": "^0.32.0",
     "@mtcute/dispatcher": "^0.32.0",
     "@shevernitskiy/llm": "npm:@jsr/shevernitskiy__llm@^0.0.28",
     "@shevernitskiy/scraperator": "npm:@jsr/shevernitskiy__scraperator@^0.0.143"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.2"
   }
 }

@@ -1,6 +1,7 @@
 import { Twitch, type TwitchOptions, type TwtichHLSSourceFormat } from "@shevernitskiy/scraperator";
-import logger from "./logger";
+
 import config from "./config";
+import logger from "./logger";
 
 // ─── Types ───────────────────────────────────────────────────
 

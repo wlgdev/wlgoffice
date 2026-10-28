@@ -1,4 +1,5 @@
 import { Twitch, type TwitchStreamInfo, type TwitchVodInfo } from "@shevernitskiy/scraperator";
+
 import logger from "./logger";
 
 /** Канал по умолчанию, если в команде нет ни ссылки, ни алиаса. */
@@ -51,10 +52,7 @@ export function pickLiveVod(vods: TwitchVodInfo[], info: TwitchStreamInfo): Live
 /**
  * Находит VOD текущего эфира канала: последний архив + состояние стрима.
  */
-export async function resolveLiveVod(
-  channel: string,
-  options: { proxy?: string; oauth?: string },
-): Promise<LiveVod> {
+export async function resolveLiveVod(channel: string, options: { proxy?: string; oauth?: string }): Promise<LiveVod> {
   const twitch = new Twitch(channel, {
     proxy: options.proxy,
     OAuthToken: options.oauth,

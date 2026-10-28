@@ -1,28 +1,30 @@
-import { TelegramClient, InputMedia, html } from "@mtcute/bun";
+import { existsSync } from "node:fs";
+
+import { html, InputMedia, TelegramClient } from "@mtcute/bun";
 import { Dispatcher, type MessageContext } from "@mtcute/dispatcher";
-import { parseVodMessage, parseVodMode, type VodMode } from "./utils";
-import { getVodHlsStream, QualityNotFoundError, type AudioPick, type HlsStreamResult, type MuteStats } from "./hls";
-import { getVkHlsStream } from "./vk";
-import { ChannelOfflineError, DEFAULT_CHANNEL, resolveLiveVod } from "./twitch";
-import { remuxHlsStream, type FfmpegRunResult } from "./ffmpeg";
+
+import config from "./config";
+import { type FfmpegRunResult, remuxHlsStream } from "./ffmpeg";
+import { type AudioPick, getVodHlsStream, type HlsStreamResult, type MuteStats, QualityNotFoundError } from "./hls";
+import { type InteropPayload, parseInteropPayload, stripInteropPayload } from "./interop";
+import logger from "./logger";
 import {
   EmptyTranscriptError,
-  RateLimitError,
-  formatRetryAfter,
-  polishTranscript,
-  transcribeAudio,
   FALLBACK_STT_MODEL,
+  formatRetryAfter,
   GROQ_MAX_FILE_BYTES,
   MAX_TRANSCRIPT_SECONDS,
   POLISH_MODEL,
-  PRIMARY_STT_MODEL,
   type PolishResult,
+  polishTranscript,
+  PRIMARY_STT_MODEL,
+  RateLimitError,
   type SttResult,
+  transcribeAudio,
 } from "./transcribe";
-import { existsSync } from "node:fs";
-import config from "./config";
-import logger from "./logger";
-import { parseInteropPayload, stripInteropPayload, type InteropPayload } from "./interop";
+import { ChannelOfflineError, DEFAULT_CHANNEL, resolveLiveVod } from "./twitch";
+import { parseVodMessage, parseVodMode, type VodMode } from "./utils";
+import { getVkHlsStream } from "./vk";
 
 // ─── 1. Глобальная защита от падений процесса ─────────────────
 
@@ -179,7 +181,9 @@ function buildCaption(params: {
   const icon = mode === "audio" ? "🎵" : "🎬";
   const label = mode === "audio" ? "Аудио" : "Клип";
   const clipTitle =
-    total > 1 ? `${icon} <b>${label} ${index}/${total} [${range.rawStart} - ${range.rawEnd}]</b>` : `${icon} <b>${label} [${range.rawStart} - ${range.rawEnd}]</b>`;
+    total > 1
+      ? `${icon} <b>${label} ${index}/${total} [${range.rawStart} - ${range.rawEnd}]</b>`
+      : `${icon} <b>${label} [${range.rawStart} - ${range.rawEnd}]</b>`;
 
   const requesterLine = interop ? `${buildRequesterLine(interop)}\n` : "";
 
@@ -250,12 +254,7 @@ function transcriptBadge(stt: SttResult, polish: PolishResult): string {
   return `${model}${warn} · ${quality}`;
 }
 
-function buildStatusMessage(
-  vodId: string,
-  statuses: string[],
-  header?: string,
-  subtitle?: string,
-): string {
+function buildStatusMessage(vodId: string, statuses: string[], header?: string, subtitle?: string): string {
   const title = header ?? `📥 <b>Обработка VOD <code>${vodId}</code></b>`;
   const sub = subtitle ? `${subtitle}\n` : "";
   return `${title}\n${sub}\n${statuses.join("\n")}`;
@@ -392,9 +391,7 @@ dp.onNewMessage(async (msg) => {
     if (!parsedVod.ranges.length) {
       await sendStatus(
         toTelegramHtml(
-          errorStatus(
-            "❌ <b>Ошибка:</b> не найдены временные интервалы (например: <code>10:00 - 12:30</code>).",
-          ),
+          errorStatus("❌ <b>Ошибка:</b> не найдены временные интервалы (например: <code>10:00 - 12:30</code>)."),
         ),
       );
       return;
@@ -424,7 +421,8 @@ dp.onNewMessage(async (msg) => {
 
     const totalRanges = parsedVod.ranges.length;
     // Оригинальная ссылка из поста юзера, фолбэк — канонический URL по ID
-    const vodUrl = parsedVod.vodUrl ?? (isVk ? `https://vkvideo.ru/video${vodId}` : `https://www.twitch.tv/videos/${vodId}`);
+    const vodUrl =
+      parsedVod.vodUrl ?? (isVk ? `https://vkvideo.ru/video${vodId}` : `https://www.twitch.tv/videos/${vodId}`);
     const requestedQualities = parsedVod.qualities;
     const audioPick: AudioPick = isTranscript ? "cheapest" : isAudio ? "best" : "none";
     // В режиме транскрипта качество из команды игнорируется: Groq смотрит только на звук,
@@ -835,9 +833,7 @@ dp.onNewMessage(async (msg) => {
       if (interop) {
         await answerText(
           msg,
-          toTelegramHtml(
-            `✅ <b>Готово:</b> ${successCount} из ${totalRanges} в чат <code>${targetChatId}</code>.`,
-          ),
+          toTelegramHtml(`✅ <b>Готово:</b> ${successCount} из ${totalRanges} в чат <code>${targetChatId}</code>.`),
         );
       }
       return;
@@ -901,9 +897,7 @@ dp.onNewMessage(async (msg) => {
       try {
         await answerText(
           msg,
-          toTelegramHtml(
-            `💥 <b>Обработка прервана.</b> Подробности — в статусе в чате <code>${targetChatId}</code>.`,
-          ),
+          toTelegramHtml(`💥 <b>Обработка прервана.</b> Подробности — в статусе в чате <code>${targetChatId}</code>.`),
         );
       } catch {}
     }

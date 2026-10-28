@@ -1,31 +1,33 @@
 import { describe, expect, test } from "bun:test";
+
+import type { TwitchStreamInfo, TwitchVodInfo } from "@shevernitskiy/scraperator";
+
 import config, { parseChannelAliases, parseChatIds } from "./config";
+import { remuxHlsStream } from "./ffmpeg";
+import {
+  filterSegmentsByRange,
+  isAudioOnlyVariant,
+  parseMediaPlaylist,
+  pickVariant,
+  QualityNotFoundError,
+  type StreamVariant,
+  variantMatchesQuality,
+} from "./hls";
+import { parseInteropPayload, stripInteropPayload } from "./interop";
+import { FALLBACK_STT_MODEL, formatRetryAfter, GROQ_MAX_FILE_BYTES, PRIMARY_STT_MODEL } from "./transcribe";
+import { pickLiveVod } from "./twitch";
 import {
   parseChannelAlias,
   parseQualities,
-  parseVodId,
-  parseVodMessage,
-  parseVodUrl,
   parseTimeRanges,
   parseVkVideoId,
+  parseVodId,
+  parseVodMessage,
   parseVodMode,
+  parseVodUrl,
   timeToSeconds,
 } from "./utils";
-import {
-  parseMediaPlaylist,
-  filterSegmentsByRange,
-  isAudioOnlyVariant,
-  pickVariant,
-  QualityNotFoundError,
-  variantMatchesQuality,
-  type StreamVariant,
-} from "./hls";
 import { parseVkMasterPlaylist } from "./vk";
-import { remuxHlsStream } from "./ffmpeg";
-import { pickLiveVod } from "./twitch";
-import { parseInteropPayload, stripInteropPayload } from "./interop";
-import { formatRetryAfter, FALLBACK_STT_MODEL, GROQ_MAX_FILE_BYTES, PRIMARY_STT_MODEL } from "./transcribe";
-import type { TwitchStreamInfo, TwitchVodInfo } from "@shevernitskiy/scraperator";
 
 describe("parseChatIds", () => {
   test("single id", () => expect(parseChatIds("123123")).toEqual([123123]));
@@ -71,9 +73,7 @@ describe("utils (trust boundary: текст из Telegram)", () => {
     expect(parseVkVideoId("!клип https://vkvideo.ru/live-46211765_456252477 10:00 - 12:30")).toBe(
       "-46211765_456252477",
     );
-    expect(parseVkVideoId("!клип https://vk.com/clip-46211765_456252477 10:00 - 12:30")).toBe(
-      "-46211765_456252477",
-    );
+    expect(parseVkVideoId("!клип https://vk.com/clip-46211765_456252477 10:00 - 12:30")).toBe("-46211765_456252477");
     // без минуса у owner_id — нормализуем, иначе Vk.getVideoByID бросит "Invalid video id"
     expect(parseVkVideoId("https://vkvideo.ru/video46211765_456252477")).toBe("-46211765_456252477");
     expect(parseVkVideoId("!клип https://www.twitch.tv/videos/123456 10:00 - 12:30")).toBeNull();
@@ -199,10 +199,24 @@ describe("pickVariant (точный матч, без фолбэка на мак�
   });
 });
 
-describe('pickVariant audio-only (режим !аудио)', () => {
+describe("pickVariant audio-only (режим !аудио)", () => {
   const withAudio: StreamVariant[] = [
-    { bandwidth: 9000, codecs: "avc1.4D0028,mp4a.40.2", resolution: "1920x1080", video: "1080p60", framerate: "60", url: "v1" },
-    { bandwidth: 2000, codecs: "avc1.4D401F,mp4a.40.2", resolution: "852x480", video: "480p30", framerate: "30", url: "v2" },
+    {
+      bandwidth: 9000,
+      codecs: "avc1.4D0028,mp4a.40.2",
+      resolution: "1920x1080",
+      video: "1080p60",
+      framerate: "60",
+      url: "v1",
+    },
+    {
+      bandwidth: 2000,
+      codecs: "avc1.4D401F,mp4a.40.2",
+      resolution: "852x480",
+      video: "480p30",
+      framerate: "30",
+      url: "v2",
+    },
     { bandwidth: 160000, codecs: "mp4a.40.2", resolution: "", video: "audio_only", framerate: "", url: "a1" },
   ];
   const videoOnly: StreamVariant[] = withAudio.slice(0, 2);
@@ -215,9 +229,9 @@ describe('pickVariant audio-only (режим !аудио)', () => {
     expect(isAudioOnlyVariant(withAudio[2]!)).toBe(true);
     expect(isAudioOnlyVariant(withAudio[0]!)).toBe(false);
     // видеокодек без resolution (VK QUALITY=audio с h264) — не audio-only
-    expect(isAudioOnlyVariant({ bandwidth: 1, codecs: "avc1,mp4a", resolution: "", video: "", framerate: "", url: "" })).toBe(
-      false,
-    );
+    expect(
+      isAudioOnlyVariant({ bandwidth: 1, codecs: "avc1,mp4a", resolution: "", video: "", framerate: "", url: "" }),
+    ).toBe(false);
   });
 
   test("audio-only вариант есть — берём его, а не максимальное видео", () => {
@@ -243,12 +257,33 @@ describe('pickVariant audio-only (режим !аудио)', () => {
   });
 });
 
-describe('pickVariant cheapest (режим !транскрипт)', () => {
+describe("pickVariant cheapest (режим !транскрипт)", () => {
   // Twitch для многих VOD не отдаёт audio_only вообще — только видео-варианты с AAC.
   const videoOnly: StreamVariant[] = [
-    { bandwidth: 7630000, codecs: "avc1.4D402A,mp4a.40.2", resolution: "1920x1080", video: "1080p60", framerate: "60", url: "v1080" },
-    { bandwidth: 1330000, codecs: "avc1.4D401F,mp4a.40.2", resolution: "852x480", video: "480p30", framerate: "30", url: "v480" },
-    { bandwidth: 247753, codecs: "avc1.4D400C,mp4a.40.2", resolution: "284x160", video: "160p30", framerate: "30", url: "v160" },
+    {
+      bandwidth: 7630000,
+      codecs: "avc1.4D402A,mp4a.40.2",
+      resolution: "1920x1080",
+      video: "1080p60",
+      framerate: "60",
+      url: "v1080",
+    },
+    {
+      bandwidth: 1330000,
+      codecs: "avc1.4D401F,mp4a.40.2",
+      resolution: "852x480",
+      video: "480p30",
+      framerate: "30",
+      url: "v480",
+    },
+    {
+      bandwidth: 247753,
+      codecs: "avc1.4D400C,mp4a.40.2",
+      resolution: "284x160",
+      video: "160p30",
+      framerate: "30",
+      url: "v160",
+    },
   ];
   const withAudio: StreamVariant[] = [
     ...videoOnly,
@@ -370,9 +405,7 @@ describe("интероп-запросы от внешних ботов", () => {
   });
 
   test("chat id канала — с минусом", () => {
-    expect(parseInteropPayload('!клип {from:"twitch";to:"-1001234567890"} 05:00 - 10:00')!.to).toBe(
-      -1001234567890,
-    );
+    expect(parseInteropPayload('!клип {from:"twitch";to:"-1001234567890"} 05:00 - 10:00')!.to).toBe(-1001234567890);
   });
 
   test("to не число → null (запрос отклоняется валидацией)", () => {
