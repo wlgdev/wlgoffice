@@ -96,13 +96,9 @@ export async function getVkHlsStream(options: VkClipOptions): Promise<HlsStreamR
     `VK "${info.title}" (${info.duration}s), вариантов: ${variants.map((v) => v.video || v.resolution).join(", ")}`,
   );
 
-  if (Number.isFinite(info.duration) && end > info.duration) {
-    logger.warn(`Requested end ${end}s exceeds VK video duration ${info.duration}s — trimming`);
-  }
-
   return streamFromVariants(variants, {
     start,
-    end: Math.min(end, info.duration),
+    end,
     quality,
     concurrency,
     audio,

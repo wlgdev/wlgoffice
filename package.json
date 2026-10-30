@@ -1,6 +1,9 @@
 {
   "name": "wlgofficebot",
+  "version": "0.7.1",
   "private": true,
+  "license": "AGPL-3.0-only",
+  "author": "shevernitskiy <mahahuha@ya.ru>",
   "type": "module",
   "module": "index.ts",
   "scripts": {
@@ -9,7 +12,8 @@
     "build:linux": "bun build --env-file=.env --env=inline --compile --target=bun-linux-x64 ./src/main.ts --outfile dist/wlgofficebot",
     "build:linux-arm": "bun build --env-file=.env --env=inline --compile --target=bun-linux-arm64 ./src/main.ts --outfile dist/wlgofficebot-arm",
     "upload": "bun build:linux && bun E:/deploy.ts ./dist/wlgofficebot /opt/bots/wlgoffice/wlgofficebot wlgoffice",
-    "format": "bun fmt"
+    "format": "bun fmt",
+    "check": "bun check"
   },
   "dependencies": {
     "@mtcute/bun": "^0.32.0",

@@ -437,7 +437,22 @@ export async function streamFromVariants(
   const mediaPlaylistText = await mediaPlaylistRes.text();
 
   const { initUrl, segments: allSegments } = parseMediaPlaylist(mediaPlaylistText, variant.url);
-  const targetSegments = filterSegmentsByRange(allSegments, start, end);
+
+  const playlistDuration = allSegments.reduce((sum, s) => sum + s.duration, 0);
+  const effectiveEnd = Math.min(end, playlistDuration);
+
+  const clock = (s: number) =>
+    [Math.floor(s / 3600), Math.floor((s % 3600) / 60), Math.floor(s % 60)]
+      .map((n) => String(n).padStart(2, "0"))
+      .join(":");
+
+  if (start >= effectiveEnd) {
+    throw new Error(
+      `Запрошенный интервал ${clock(start)} - ${clock(end)} вне манифеста (длительность потока: ${clock(playlistDuration)})`,
+    );
+  }
+
+  const targetSegments = filterSegmentsByRange(allSegments, start, effectiveEnd);
 
   const firstSeg = targetSegments[0];
   const lastSeg = targetSegments[targetSegments.length - 1];
@@ -447,7 +462,7 @@ export async function streamFromVariants(
   }
 
   const trimStart = Math.max(0, start - firstSeg.startTime);
-  const trimDuration = end - start;
+  const trimDuration = effectiveEnd - start;
   const rangeEnd = lastSeg.startTime + lastSeg.duration;
 
   logger.info(
