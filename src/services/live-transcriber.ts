@@ -1,10 +1,10 @@
 import { GeminiLive, type GeminiLiveSession } from "@shevernitskiy/llm";
 
+import logger from "../logger";
 import { resolveFfmpegBinary } from "./ffmpeg";
-import logger from "./logger";
 
 const BYTES_PER_SECOND = 16000 * 2;
-const CHUNK_BYTES = BYTES_PER_SECOND / 5; // 200ms
+const CHUNK_BYTES = BYTES_PER_SECOND / 5;
 const FLUSH_MS = 3000;
 
 export interface LiveTranscriptionChunk {
@@ -17,7 +17,6 @@ export interface LiveTranscriberOptions {
   geminiApiKey: string;
   systemInstruction?: string;
   durationSec?: number;
-  /** Момент начала стрима (ms epoch) — запасной источник смещения таймстемпов. */
   streamStartEpochMs?: number;
 }
 
@@ -30,7 +29,6 @@ export class LiveTranscriber {
   private timer?: ReturnType<typeof setTimeout>;
   private stopped = false;
   private sentBytes = 0;
-  /** Смещение таймстемпа от начала транскрибации (секунды от начала стрима). */
   private offsetSec = 0;
   private textHandlers = new Set<TranscriptionHandler>();
 
@@ -115,12 +113,6 @@ export class LiveTranscriber {
     }
   }
 
-  /**
-   * Смещение таймстемпов от начала стрима.
-   * Twitch отдаёт в медиаплейлисте EXT-X-TWITCH-ELAPSED-SECS — время от начала стрима
-   * для первого сегмента окна (ровно то, с чего начнёт читать ffmpeg).
-   * Если тега нет — считаем по времени начала стрима (fallback).
-   */
   private async resolveOffsetSec(): Promise<number> {
     try {
       const res = await fetch(this.options.hlsUrl);
@@ -128,7 +120,6 @@ export class LiveTranscriber {
       const match = text.match(/#EXT-X-TWITCH-ELAPSED-SECS:([\d.]+)/);
       if (match?.[1]) {
         const offset = parseFloat(match[1]);
-        // logger.info(`[LiveTranscriber] смещение от начала стрима: ${offset.toFixed(1)}s`);
         return offset;
       }
     } catch (err) {

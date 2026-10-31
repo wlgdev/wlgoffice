@@ -1,54 +1,36 @@
 import { Gemini, Groq, type GroqTranscriptionModel, LlmApiError } from "@shevernitskiy/llm";
 
-import config from "./config";
-import logger from "./logger";
-
-// ─── Types ───────────────────────────────────────────────────
+import config from "../config";
+import logger from "../logger";
 
 export type SttModel = GroqTranscriptionModel;
 
 export const PRIMARY_STT_MODEL: SttModel = "whisper-large-v3";
 export const FALLBACK_STT_MODEL: SttModel = "whisper-large-v3-turbo";
-
 export const POLISH_MODEL = "gemini-3.5-flash-lite";
 
-/** Groq free tier: ASH 7.2K сек/час, ASD 28.8K сек/сут на каждую модель отдельно. */
 export const GROQ_MAX_FILE_BYTES = 25 * 1024 * 1024;
 export const MAX_TRANSCRIPT_SECONDS = 20 * 60;
 
-/**
- * Whisper укладывается в real-time с большим запасом, поэтому таймаут задаём от длины
- * аудио: загрузка файла пропорциональна длительности и на длинном фрагменте
- * 300-секундного потолка не хватает.
- */
 const STT_TIMEOUT_MARGIN_SEC = 10;
 const POLISH_TIMEOUT_MS = 120_000;
 const POLISH_RETRY_DELAY_MS = 2000;
 
 const TRANSCRIBE_LANGUAGE = "ru";
-
-/**
- * Подсказка Whisper (лимит 224 токена) задаёт стиль и подсказывает написание имён.
- * Стоит вписать имена ведущих и названия игр канала — это заметно поднимает точность
- * транскрипции имён собственных.
- */
 const TRANSCRIBE_PROMPT = "Разговорный русский стрим про игры и технику.";
 
 export interface SttResult {
   text: string;
   model: SttModel;
-  /** Почему ушли с основной модели, если ушли. */
   fallbackReason?: string;
 }
 
 export interface PolishResult {
   text: string;
   polished: boolean;
-  /** Почему текст остался сырым. */
   failureReason?: string;
 }
 
-/** Лимит Groq исчерпан и ни одна из моделей не справилась. */
 export class RateLimitError extends Error {
   constructor(
     readonly retryAfterSec: number | null,
@@ -59,15 +41,12 @@ export class RateLimitError extends Error {
   }
 }
 
-/** Аудио не содержит распознаваемой речи. */
 export class EmptyTranscriptError extends Error {
   constructor() {
     super("В этом фрагменте не распознано речи");
     this.name = "EmptyTranscriptError";
   }
 }
-
-// ─── Helpers ─────────────────────────────────────────────────
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -80,10 +59,6 @@ function requireApiKey(apiKey: string | undefined, envName: string): string {
   return apiKey;
 }
 
-/**
- * Groq отдаёт retry-after только на 429; в теле ошибки дублирует его человекочитаемо.
- * Возвращает null, если восстановить время сброса не удалось.
- */
 export function parseRetryAfter(err: LlmApiError): number | null {
   const fromHeader = Number(err.headers["retry-after"] ?? err.headers["Retry-After"]);
   if (Number.isFinite(fromHeader) && fromHeader >= 0) return fromHeader;
@@ -96,19 +71,12 @@ export function parseRetryAfter(err: LlmApiError): number | null {
   return null;
 }
 
-/**
- * На тишине и музыке Groq отдаёт 200 с пустым text, и transcribe() сам падает
- * с LlmApiError (status 200, "empty response"). Это не сбой, а пустой результат —
- * переводим в собственный тип, чтобы хендлер показал понятный статус.
- */
 export function isEmptyTranscript(err: unknown): boolean {
   return err instanceof LlmApiError && err.status === 200 && /empty response/i.test(err.message);
 }
 
-/** Короткое человекочитаемое описание сбоя для статуса в чате. */
 export function describeFailure(err: unknown): string {
   if (err instanceof LlmApiError) {
-    // status 2xx у Groq/Gemini означает не API-ошибку, а пустой результат
     if (err.status >= 200 && err.status < 300) return "пустой ответ модели";
     return `HTTP ${err.status}`;
   }
@@ -125,13 +93,6 @@ export function formatRetryAfter(seconds: number | null): string {
   return `через ~${Math.round(seconds / 60)} мин`;
 }
 
-// ─── Groq: Speech-to-Text ────────────────────────────────────
-
-/**
- * Распознаёт речь через Groq. Основная модель — Whisper Large V3; если на неё
- * пришёл 429 (исчерпан лимит аудио-секунд), один раз переключаемся на turbo —
- * у него отдельный счётчик ASH/ASD. На остальные ошибки переключения нет.
- */
 export async function transcribeAudio(file: Blob, durationSec: number, preferTurbo = false): Promise<SttResult> {
   const groq = new Groq(requireApiKey(config.groq.apiKey, "GROQ_APIKEY"));
   const timeoutMs = Math.round((durationSec + STT_TIMEOUT_MARGIN_SEC) * 1000);
@@ -184,19 +145,12 @@ export async function transcribeAudio(file: Blob, durationSec: number, preferTur
   throw new Error("Groq: не удалось распознать речь");
 }
 
-// ─── Gemini: причёсывание текста ─────────────────────────────
-
 const POLISH_PROMPT = `Далее будет текст - расшифровка после STT модели. Текст может быть отрывистым и
 с неправильно сложенными предложениями и пунктуацией. Могут быть даже ошибки.
 Твоя задача максимально точно всё сохранить, и мысли и слова, только сделать
 этот текст пригодный для чтения. Можно убирать слова паразиты или чутка
 перескладывать предложения, чтобы текст стал более печатным. Отвечай только отредактированным текстом.`;
 
-/**
- * Приводит сырую расшифровку к читаемому виду. Ровно один ретрай: Groq уже
- * потратил аудио-секунды, терять результат из-за недоступности Gemini жалко —
- * при неудаче отдаём исходный текст, помечая его как сырой.
- */
 export async function polishTranscript(raw: string): Promise<PolishResult> {
   const gemini = new Gemini(requireApiKey(config.gemini.apiKey, "GEMINI_APIKEY"));
 

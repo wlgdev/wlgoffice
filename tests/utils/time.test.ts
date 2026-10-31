@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { humanizeDuration, parseTimeRanges, timeStringFromTs, timeToSeconds } from "../../src/utils";
+import { humanizeDuration, parseTimeRanges, timeStringFromTs, timeToSeconds } from "../../src/core/utils";
 
 describe("time utils", () => {
   describe("timeToSeconds", () => {

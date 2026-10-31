@@ -6,9 +6,7 @@ import { Readable } from "node:stream";
 
 import { which } from "bun";
 
-import logger from "./logger";
-
-// ─── Types ───────────────────────────────────────────────────
+import logger from "../logger";
 
 export interface RemuxToFileOptions {
   stream: ReadableStream<Uint8Array>;
@@ -52,10 +50,8 @@ export interface FfmpegStreamResult {
   stream: ReadableStream<Uint8Array>;
   duration: number;
   trimStart: number;
-  result: Promise<FfmpegStreamStats>; // Промис со статистикой, который завершится вместе со стримом
+  result: Promise<FfmpegStreamStats>;
 }
-
-// ─── Binary Resolver ─────────────────────────────────────────
 
 export function resolveFfmpegBinary(customPath?: string): string {
   if (customPath) {
@@ -66,8 +62,6 @@ export function resolveFfmpegBinary(customPath?: string): string {
   const isWindows = process.platform === "win32";
   const binaryName = isWindows ? "ffmpeg.exe" : "ffmpeg";
 
-  // Скомпилированный бинарник могут запускать с любым cwd (через .bat) —
-  // поэтому сначала смотрим рядом с самим exe, а не в cwd.
   const nextToExecutable = join(dirname(process.execPath), binaryName);
   if (existsSync(nextToExecutable)) return nextToExecutable;
 
@@ -101,8 +95,6 @@ export function resolveFfmpegBinary(customPath?: string): string {
   );
 }
 
-// ─── Helper: Setup Input Pipe ────────────────────────────────
-
 function setupInputPipe(
   child: ReturnType<typeof spawn>,
   inputStream: ReadableStream<Uint8Array>,
@@ -125,8 +117,6 @@ function setupInputPipe(
   nodeReadable.pipe(child.stdin!);
 }
 
-// ─── 1. Сохранение в файл ────────────────────────────────────
-
 export async function remuxHlsStream(options: RemuxToFileOptions): Promise<FfmpegRunResult> {
   const {
     stream,
@@ -141,10 +131,6 @@ export async function remuxHlsStream(options: RemuxToFileOptions): Promise<Ffmpe
 
   const startTime = performance.now();
   const ffmpegBin = resolveFfmpegBinary(ffmpegPath);
-
-  // Пишем вход во временный файл: mov-демuxer сикается по входу (default-base-is-moof/sidx),
-  // на pipe:0 это даёт "partial file" и пустой выхлоп с кодом 0.
-  // ponytail: +1 проход по диску (~60MB), уберётся само; альтернатива — чинить сики в ffmpeg, нет.
   const tmpIn = `${outPath}.in.tmp`;
 
   const args: string[] = [];
@@ -231,8 +217,6 @@ export async function remuxHlsStream(options: RemuxToFileOptions): Promise<Ffmpe
   }
 }
 
-// ─── 2. Ремуксинг в выходной ReadableStream (fMP4) ───────────
-
 export function remuxHlsToStream(options: RemuxToStreamOptions): FfmpegStreamResult {
   const { stream, trimStart = 0, trimDuration = 0, ffmpegPath, verbose = false } = options;
 
@@ -245,7 +229,6 @@ export function remuxHlsToStream(options: RemuxToStreamOptions): FfmpegStreamRes
   args.push("-i", "pipe:0");
   if (trimDuration > 0) args.push("-t", String(trimDuration));
 
-  // Флаги фрагментированного MP4 для стриминга в pipe:1
   args.push(
     "-c",
     "copy",
@@ -270,7 +253,6 @@ export function remuxHlsToStream(options: RemuxToStreamOptions): FfmpegStreamRes
     stderrData += chunk.toString();
   });
 
-  // Пайпим входящие TS сегменты
   setupInputPipe(child, stream);
 
   let totalBytes = 0;
@@ -282,7 +264,6 @@ export function remuxHlsToStream(options: RemuxToStreamOptions): FfmpegStreamRes
     rejectStats = reject;
   });
 
-  // Создаем исходящий Web ReadableStream из stdout FFmpeg
   const outStream = new ReadableStream<Uint8Array>({
     start(controller) {
       child.stdout?.on("data", (chunk: Buffer) => {

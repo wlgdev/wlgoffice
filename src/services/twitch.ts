@@ -1,8 +1,7 @@
 import { Twitch, type TwitchStreamInfo, type TwitchVodInfo } from "@shevernitskiy/scraperator";
 
-import logger from "./logger";
+import logger from "../logger";
 
-/** Канал по умолчанию, если в команде нет ни ссылки, ни алиаса. */
 export const DEFAULT_CHANNEL = "welovegames";
 
 export interface LiveVod {
@@ -11,7 +10,6 @@ export interface LiveVod {
   title: string;
 }
 
-/** Канал не в эфире — клипить нечего. */
 export class ChannelOfflineError extends Error {
   constructor(channel: string) {
     super(`Канал ${channel} сейчас не в эфире`);
@@ -19,7 +17,6 @@ export class ChannelOfflineError extends Error {
   }
 }
 
-/** Эфир идёт, но архив текущей трансляции ещё не появился (или не совпал broadcast id). */
 export class LiveVodNotFoundError extends Error {
   constructor(channel: string) {
     super(`Не найден архивный VOD текущего эфира канала ${channel}`);
@@ -27,10 +24,6 @@ export class LiveVodNotFoundError extends Error {
   }
 }
 
-/**
- * Чистая часть: выбирает VOD текущего эфира из ответа Twitch.
- * Эфир должен быть онлайн, а broadcast id одного из последних архивов — совпадать со stream id.
- */
 export function pickLiveVod(vods: TwitchVodInfo[], info: TwitchStreamInfo): LiveVod | null {
   if (!info.online) {
     return null;
@@ -49,10 +42,6 @@ export function pickLiveVod(vods: TwitchVodInfo[], info: TwitchStreamInfo): Live
   };
 }
 
-/**
- * Находит VOD текущего эфира канала: последние 10 архивов + состояние стрима.
- * Эфир может быть онлайн, но архив ещё не опубликован — поэтому до трёх попыток с паузой.
- */
 export async function resolveLiveVod(channel: string, options: { proxy?: string; oauth?: string }): Promise<LiveVod> {
   const twitch = new Twitch(channel, {
     proxy: options.proxy,

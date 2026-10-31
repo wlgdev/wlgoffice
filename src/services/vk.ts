@@ -1,12 +1,13 @@
 import { Vk } from "@shevernitskiy/scraperator";
 
-import { type AudioPick, type HlsStreamResult, streamFromVariants, type StreamVariant } from "./hls";
-import logger from "./logger";
+import type { AudioPick, StreamVariant } from "../core/types";
+import logger from "../logger";
+import { type HlsStreamResult, streamFromVariants } from "./hls";
 
 export interface VkClipOptions {
-  videoId: string; // "-46211765_456252477"
-  start: number; // в секундах
-  end: number; // в секундах
+  videoId: string;
+  start: number;
+  end: number;
   quality?: string | string[];
   concurrency?: number;
   proxy?: string;
@@ -14,12 +15,6 @@ export interface VkClipOptions {
   audio?: AudioPick;
 }
 
-/**
- * Парсит master-манифест VK в варианты качества.
- * Формат строки: #EXT-X-STREAM-INF:QUALITY=fullhd,BANDWIDTH=5063647,RESOLUTION=1920x1080,FRAME-RATE=60.000,CODECS="..."
- * Порядок и набор параметров менялись между видео, поэтому разбираем параметры по именам,
- * а URL варианта (относительный) склеиваем с базой мастер-плейлиста.
- */
 export function parseVkMasterPlaylist(playlistText: string, masterUrl: string): StreamVariant[] {
   const lines = playlistText
     .split(/\r?\n/)
@@ -72,9 +67,7 @@ export async function getVkHlsStream(options: VkClipOptions): Promise<HlsStreamR
 
   logger.info(`Fetching VK video metadata for "${videoId}"...`);
 
-  // Имя канала на запрос метаданных не влияет — используется только анонимный токен.
   const vk = new Vk("vkvideo", { proxy, accessToken });
-
   const info = await vk.getVideoByID(videoId);
 
   if (!info.hls) {

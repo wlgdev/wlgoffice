@@ -1,48 +1,41 @@
-export interface ParsedTimeRange {
-  startSeconds: number;
-  endSeconds: number;
-  rawStart: string;
-  rawEnd: string;
-}
+import { existsSync } from "node:fs";
+
+import type { ParsedTimeRange, ParsedVodMessage, VodMode, VodPlatform } from "./types";
+
+export type { ParsedTimeRange, ParsedVodMessage, VodMode, VodPlatform };
 
 export function humanizeDuration(durationMs: number): string {
-  // Handle non-positive durations
   if (durationMs <= 0) {
     return "0с";
   }
 
-  // Define time constants in milliseconds
   const msPerSecond = 1000;
   const msPerMinute = 60 * msPerSecond;
   const msPerHour = 60 * msPerMinute;
   const msPerDay = 24 * msPerHour;
-  const msPerYear = 365 * msPerDay; // Approximation, ignores leap years
+  const msPerYear = 365 * msPerDay;
 
   let remainingMs = durationMs;
   const parts: string[] = [];
 
-  // Calculate years
   const years = Math.floor(remainingMs / msPerYear);
   if (years > 0) {
     parts.push(`${years}г`);
     remainingMs %= msPerYear;
   }
 
-  // Calculate days
   const days = Math.floor(remainingMs / msPerDay);
   if (days > 0) {
     parts.push(`${days}д`);
     remainingMs %= msPerDay;
   }
 
-  // Calculate hours
   const hours = Math.floor(remainingMs / msPerHour);
   if (hours > 0) {
     parts.push(`${hours}ч`);
     remainingMs %= msPerHour;
   }
 
-  // Calculate minutes
   const minutes = Math.floor(remainingMs / msPerMinute);
   if (minutes > 0) {
     parts.push(`${minutes}м`);
@@ -61,7 +54,7 @@ export function humanizeDuration(durationMs: number): string {
   return parts.join(" ");
 }
 
-export function timeStringFromTs(ms: number, offsetMs = 0) {
+export function timeStringFromTs(ms: number, offsetMs = 0): string {
   ms += offsetMs;
   const secondsTotal = (ms / 1000) | 0;
   const h = ((secondsTotal / 3600) % 24) | 0;
@@ -70,16 +63,11 @@ export function timeStringFromTs(ms: number, offsetMs = 0) {
   return (h < 10 ? "0" + h : h) + ":" + (m < 10 ? "0" + m : m) + ":" + (s < 10 ? "0" + s : s);
 }
 
-/**
- * Конвертирует строку времени вида "ЧЧ:ММ:СС", "ММ:СС" или "СС" в секунды.
- * Возвращает null, если формат некорректен.
- */
 export function timeToSeconds(timeStr: string): number | null {
   const parts = timeStr.split(":");
   const numbers: number[] = [];
 
   for (const part of parts) {
-    // Проверяем, что часть состоит только из цифр
     if (!/^\d+$/.test(part)) {
       return null;
     }
@@ -90,7 +78,6 @@ export function timeToSeconds(timeStr: string): number | null {
     numbers.push(num);
   }
 
-  // ЧЧ:ММ:СС
   if (numbers.length === 3) {
     const h = numbers[0];
     const m = numbers[1];
@@ -106,7 +93,6 @@ export function timeToSeconds(timeStr: string): number | null {
     return h * 3600 + m * 60 + s;
   }
 
-  // ММ:СС
   if (numbers.length === 2) {
     const m = numbers[0];
     const s = numbers[1];
@@ -121,7 +107,6 @@ export function timeToSeconds(timeStr: string): number | null {
     return m * 60 + s;
   }
 
-  // СС
   if (numbers.length === 1) {
     const s = numbers[0];
 
@@ -135,13 +120,6 @@ export function timeToSeconds(timeStr: string): number | null {
   return null;
 }
 
-/**
- * Парсит временные диапазоны из текста.
- * Поддерживаются пары «ММ:СС», «ЧЧ:ММ:СС» или просто секунды («100»),
- * а также их смешения («100 - 1:30», «10:00 - 234»), тире разного рода и с пробелами/без.
- * @param text Исходное сообщение
- * @returns Массив найденных интервалов с переводом в секунды
- */
 export function parseTimeRanges(text: string): ParsedTimeRange[] {
   const timeRangeRegex = /\b(\d{1,2}(?::\d{1,2}){1,2}|\d{1,5})\s*[-‐‑‒–—―−~]\s*(\d{1,2}(?::\d{1,2}){1,2}|\d{1,5})\b/g;
 
@@ -152,7 +130,6 @@ export function parseTimeRanges(text: string): ParsedTimeRange[] {
     const rawStart = match[1];
     const rawEnd = match[2];
 
-    // Защита от undefined из regex-групп для strict TypeScript
     if (rawStart === undefined || rawEnd === undefined) {
       continue;
     }
@@ -173,13 +150,6 @@ export function parseTimeRanges(text: string): ParsedTimeRange[] {
   return results;
 }
 
-/**
- * Извлекает первый найденный Twitch VOD ID из текста.
- * Поддерживает: http(s), www, мобильную версию m.twitch.tv или ссылку без протокола.
- *
- * @param text Исходный текст со ссылкой
- * @returns ID видео в виде строки или null, если ссылка не найдена
- */
 export function parseVodId(text: string): string | null {
   const vodRegex = /(?:https?:\/\/)?(?:www\.|m\.)?twitch\.tv\/videos\/(\d+)/i;
   const match = vodRegex.exec(text);
@@ -192,12 +162,6 @@ export function parseVodId(text: string): string | null {
   return vodId !== undefined ? vodId : null;
 }
 
-/**
- * Извлекает ВСЕ Twitch VOD ID из текста (если в сообщении несколько ссылок)
- *
- * @param text Исходный текст
- * @returns Массив найденных VOD ID
- */
 export function parseAllVodIds(text: string): string[] {
   const vodRegex = /(?:https?:\/\/)?(?:www\.|m\.)?twitch\.tv\/videos\/(\d+)/gi;
   const ids: string[] = [];
@@ -213,22 +177,9 @@ export function parseAllVodIds(text: string): string[] {
   return ids;
 }
 
-/**
- * Платформа источника видео.
- */
-export type VodPlatform = "twitch" | "vk";
-
 const VK_LINK_REGEX =
   /(?:https?:\/\/)?(?:www\.|m\.)?(?:vkvideo\.ru|vk\.com|vk\.ru)\/(?:video|live|clips?)?(-?\d+)_(\d+)/i;
 
-/**
- * Извлекает ID видео VK из текста.
- * Поддерживает vkvideo.ru/video<owner>_<id>, vkvideo.ru/live<owner>_<id>, vk.com/clip<owner>_<id>.
- * owner_id нормализуется к виду с ведущим минусом — этого требует Vk.getVideoByID.
- *
- * @param text Исходный текст со ссылкой
- * @returns ID вида "-46211765_456252477" или null
- */
 export function parseVkVideoId(text: string): string | null {
   const match = VK_LINK_REGEX.exec(text);
 
@@ -246,9 +197,6 @@ export function parseVkVideoId(text: string): string | null {
   return `${ownerId.startsWith("-") ? ownerId : `-${ownerId}`}_${videoId}`;
 }
 
-/**
- * Извлекает оригинальную ссылку на видео VK (для подписи к клипу).
- */
 export function parseVkUrl(text: string): string | null {
   const match = VK_LINK_REGEX.exec(text);
   if (!match) {
@@ -260,29 +208,10 @@ export function parseVkUrl(text: string): string | null {
   return raw.startsWith("http") ? raw : `https://${raw}`;
 }
 
-export interface ParsedVodMessage {
-  platform: VodPlatform | null;
-  vodId: string | null;
-  vodUrl: string | null;
-  /** Канонический логин Twitch-канала, если в тексте найден алиас (влг, табула, ...) */
-  channel: string | null;
-  ranges: ParsedTimeRange[];
-  qualities: string[];
-}
-
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/**
- * Ищет в тексте алиас Twitch-канала и возвращает его канонический логин.
- * Границы слова строгие: кириллица не входит в \w, поэтому обычный \b не подходит —
- * проверяем, что рядом с алиасом нет букв, цифр и подчёркивания.
- *
- * @param text Исходный текст команды
- * @param aliases Карта алиас → логин канала
- * @returns Логин канала или null, если алиас не найден
- */
 export function parseChannelAlias(text: string, aliases: Record<string, string>): string | null {
   const lower = text.toLowerCase();
 
@@ -297,10 +226,6 @@ export function parseChannelAlias(text: string, aliases: Record<string, string>)
   return null;
 }
 
-/**
- * Извлекает оригинальную ссылку на VOD из текста (сохраняем www/m subdomain как прислал юзер).
- * Возвращает null, если ссылки нет. Протокол нормализуем к https:// для кликабельного href.
- */
 export function parseVodUrl(text: string): string | null {
   const match = /(?:https?:\/\/)?((?:www\.|m\.)?twitch\.tv\/videos\/(\d+))/i.exec(text);
   if (!match || match[1] === undefined) {
@@ -309,10 +234,6 @@ export function parseVodUrl(text: string): string | null {
   return `https://${match[1]}`;
 }
 
-/**
- * Извлекает запрошенные качества из текста (паттерн "<цифры>p": 720p, 1080p).
- * Возвращает нормализованные (lowercase) значения в порядке появления, без дублей.
- */
 export function parseQualities(text: string): string[] {
   const qualityRegex = /\b(\d+p)\b/gi;
   const result: string[] = [];
@@ -334,14 +255,6 @@ export function parseQualities(text: string): string[] {
   return result;
 }
 
-export type VodMode = "video" | "audio" | "transcript";
-
-/**
- * Определяет режим команды:
- * !транскрипт — расшифровка речи (Whisper + Gemini),
- * !аудио (алиас !audio) — только звук,
- * всё остальное — видеоклип.
- */
 export function parseVodMode(text: string): VodMode {
   const trimmed = text.trim();
   if (/^!(?:транскрипт|транскрипция|транс|transcript)(?![а-яёa-z0-9_])/i.test(trimmed)) {
@@ -387,4 +300,12 @@ export function parseVodMessage(text: string, aliases: Record<string, string> = 
     ranges: parseTimeRanges(text),
     qualities: parseQualities(text),
   };
+}
+
+export async function safeDeleteFile(filePath: string): Promise<void> {
+  try {
+    if (filePath && existsSync(filePath)) {
+      await Bun.file(filePath).unlink();
+    }
+  } catch {}
 }

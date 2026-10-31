@@ -10,7 +10,7 @@ import {
   parseVodMessage,
   parseVodMode,
   parseVodUrl,
-} from "../../src/utils";
+} from "../../src/core/utils";
 
 describe("vod parser utils", () => {
   describe("Twitch VOD parser", () => {

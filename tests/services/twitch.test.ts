@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { TwitchStreamInfo, TwitchVodInfo } from "@shevernitskiy/scraperator";
 
-import { ChannelOfflineError, DEFAULT_CHANNEL, LiveVodNotFoundError, pickLiveVod } from "../../src/twitch";
+import { ChannelOfflineError, DEFAULT_CHANNEL, LiveVodNotFoundError, pickLiveVod } from "../../src/services/twitch";
 
 describe("twitch service", () => {
   const vod = (id: string, broadcastId: string, title = "Stream title") =>

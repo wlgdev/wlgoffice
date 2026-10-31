@@ -12,7 +12,7 @@ import {
   QualityNotFoundError,
   type StreamVariant,
   variantMatchesQuality,
-} from "../../src/hls";
+} from "../../src/services/hls";
 
 describe("hls service", () => {
   const sampleVariants: StreamVariant[] = [

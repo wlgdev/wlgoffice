@@ -1,3 +1,3 @@
-import { startBot } from "./telegram";
+import { startBot } from "./telegram/bot";
 
 startBot();

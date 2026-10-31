@@ -1,15 +1,15 @@
-import { Twitch, type TwitchOptions, type TwtichHLSSourceFormat } from "@shevernitskiy/scraperator";
+import { Twitch, type TwtichHLSSourceFormat } from "@shevernitskiy/scraperator";
 
-import config from "./config";
-import logger from "./logger";
+import type { AudioPick, MuteStats, StreamVariant, VariantInfo } from "../core/types";
+import logger from "../logger";
 
-// ─── Types ───────────────────────────────────────────────────
+export type { AudioPick, MuteStats, StreamVariant, VariantInfo };
 
 export interface HlsClipOptions {
   channel: string;
   vodId: string;
-  start: number; // в секундах
-  end: number; // в секундах
+  start: number;
+  end: number;
   quality?: string | string[];
   concurrency?: number;
   proxy?: string;
@@ -17,10 +17,6 @@ export interface HlsClipOptions {
   audio?: AudioPick;
 }
 
-/**
- * Ошибка "запрошенное качество отсутствует в манифесте".
- * Ничего не качаем — вызывающий код должен сообщить юзеру и пропустить клип.
- */
 export class QualityNotFoundError extends Error {
   readonly requested: string[];
   readonly available: string[];
@@ -41,39 +37,8 @@ export interface HlsSegment {
 }
 
 export interface ParsedPlaylist {
-  initUrl?: string; // URL init-сегмента для fMP4
+  initUrl?: string;
   segments: HlsSegment[];
-}
-
-export interface VariantInfo {
-  quality: string; // e.g. "1080p59"
-  resolution: string; // e.g. "1920x1080"
-  width: number; // 1920
-  height: number; // 1080
-  framerate: number; // 59.588
-  bandwidth: number; // в bps (9720293)
-  bandwidthMbps: number; // 9.72
-  codecs: string; // "avc1.4D0028,mp4a.40.2"
-  videoCodec?: string; // "avc1.4D0028"
-  audioCodec?: string; // "mp4a.40.2"
-  url: string;
-}
-
-export interface MuteStats {
-  totalSegments: number;
-  mutedFound: number;
-  unmutedSuccess: number;
-  remainedMuted: number;
-}
-
-/** Платформенно-независимое описание варианта качества из master-манифеста. */
-export interface StreamVariant {
-  bandwidth: number;
-  resolution: string;
-  video: string;
-  framerate: string;
-  codecs: string;
-  url: string;
 }
 
 export interface HlsStreamResult {
@@ -87,7 +52,7 @@ export interface HlsStreamResult {
     start: number;
     end: number;
   };
-  muteStats: Promise<MuteStats>; // Промис, который зарезолвится по завершению скачивания потока
+  muteStats: Promise<MuteStats>;
 }
 
 interface SegmentDownloadResult {
@@ -95,8 +60,6 @@ interface SegmentDownloadResult {
   wasMuted: boolean;
   unmutedSuccess: boolean;
 }
-
-// ─── Helpers ─────────────────────────────────────────────────
 
 export function fromTwitchVariant(v: TwtichHLSSourceFormat): StreamVariant {
   return {
@@ -128,10 +91,6 @@ export function parseVariantInfo(v: StreamVariant): VariantInfo {
   };
 }
 
-/**
- * Проверяет, соответствует ли вариант манифеста запрошенному качеству.
- * "720p" матчится на "720p", "720p60" (высота + fps), либо на resolution "1280x720".
- */
 export function variantMatchesQuality(v: StreamVariant, quality: string): boolean {
   const q = quality.toLowerCase();
 
@@ -154,20 +113,9 @@ export function variantMatchesQuality(v: StreamVariant, quality: string): boolea
   return false;
 }
 
-/**
- * Вариант без видеодорожки (Twitch "audio_only", VK "QUALITY=audio").
- */
 export function isAudioOnlyVariant(v: StreamVariant): boolean {
   return !v.resolution && !/avc|hev|hvc|vp0?9|av01/i.test(v.codecs);
 }
-
-/**
- * Как выбирать источник звука.
- * none — обычный видеоклип, качество берётся из команды;
- * best — !аудио: нужна лучшая AAC-дорожка;
- * cheapest — !транскрипт: важен вес скачанного, а не качество звука.
- */
-export type AudioPick = "none" | "best" | "cheapest";
 
 export function pickVariant(
   variants: StreamVariant[],
@@ -178,7 +126,6 @@ export function pickVariant(
     .map((q) => q.toLowerCase())
     .filter(Boolean);
 
-  // В видеорежиме аудиодорожка конкурентом не считается — bandwidth у неё бывает выше.
   const videoVariants = variants.filter((v) => !isAudioOnlyVariant(v));
   const pool = videoVariants.length ? videoVariants : variants;
 
@@ -190,7 +137,6 @@ export function pickVariant(
   }
 
   if (audio !== "none") {
-    // 1. Явное качество из команды — источник звука именно из него.
     if (requested.length > 0) {
       for (const q of requested) {
         const found = sorted.find((v) => variantMatchesQuality(v, q));
@@ -198,20 +144,14 @@ export function pickVariant(
       }
     }
 
-    // 2. Отдельная аудиодорожка — она и есть и самый лёгкий, и самый чистый источник.
     const audioVariant = variants.find(isAudioOnlyVariant);
     if (audioVariant) return audioVariant;
 
-    // 3. Отдельной дорожки нет (Twitch VOD часто отдаёт только видео-варианты с AAC).
-    //    Для выкладки аудио берём лучший AAC, для транскрипта — самый лёгкий поток,
-    //    потому что видео всё равно выкинет ffmpeg, а качать его в 7 Мбит/с незачем.
     return audio === "cheapest" ? sorted[sorted.length - 1]! : bestVariant;
   }
 
-  // Целевое качество не задано — качаем максимальное, как раньше
   if (requested.length === 0) return bestVariant;
 
-  // Несколько качеств из сообщения проверяем по очереди, берём первое совпавшее
   for (const q of requested) {
     const found = sorted.find((v) => variantMatchesQuality(v, q));
     if (found) {
@@ -235,7 +175,6 @@ export function parseMediaPlaylist(playlistText: string, baseUrl: string): Parse
   for (const rawLine of lines) {
     const line = rawLine.trim();
 
-    // Парсим тег #EXT-X-MAP для fMP4 (содержит ссылку на init.mp4)
     if (line.startsWith("#EXT-X-MAP:")) {
       const match = line.match(/URI=["']?([^"',]+)["']?/i);
       if (match && match[1]) {
@@ -290,9 +229,7 @@ async function fetchSegment(url: string): Promise<SegmentDownloadResult> {
           unmutedSuccess: true,
         };
       }
-    } catch {
-      // Игнорируем и пробуем оригинальный
-    }
+    } catch {}
 
     const fallbackRes = await fetch(`${url}`);
     if (!fallbackRes.ok) throw new Error(`HTTP ${fallbackRes.status} for ${url}`);
@@ -312,16 +249,12 @@ async function fetchSegment(url: string): Promise<SegmentDownloadResult> {
   };
 }
 
-/**
- * Создаёт генератор и одновременно резолвит промис со статистикой mute
- */
 async function* createSegmentGenerator(
   segments: HlsSegment[],
   concurrency: number,
   initUrl: string | undefined,
   onFinish: (stats: MuteStats) => void,
 ): AsyncGenerator<Uint8Array, void, unknown> {
-  // Если у VOD есть init-сегмент (fMP4), отправляем его первым в поток
   if (initUrl) {
     const initRes = await fetch(`${initUrl}`);
     if (!initRes.ok) {
@@ -399,8 +332,6 @@ function createOrderedSegmentStream(
   });
 }
 
-// ─── Main Export ─────────────────────────────────────────────
-
 export interface StreamFromVariantsOptions {
   start: number;
   end: number;
@@ -409,10 +340,6 @@ export interface StreamFromVariantsOptions {
   audio?: AudioPick;
 }
 
-/**
- * Платформенно-независимое ядро: по списку вариантов качества строит поток
- * только нужного диапазона сегментов. Используется и Twitch, и VK.
- */
 export async function streamFromVariants(
   rawVariants: StreamVariant[],
   options: StreamFromVariantsOptions,
@@ -471,8 +398,6 @@ export async function streamFromVariants(
     }`,
   );
 
-  // Создаем промис для сбора статистики по мьютам.
-  // reject обязателен: при ошибке скачивания сегмента Promise.all в обработчике иначе висит вечно.
   let resolveStats!: (stats: MuteStats) => void;
   let rejectStats!: (err: any) => void;
   const muteStats = new Promise<MuteStats>((res, rej) => {

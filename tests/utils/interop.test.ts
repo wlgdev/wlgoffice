@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { parseInteropPayload, stripInteropPayload } from "../../src/interop";
-import { parseVodMessage } from "../../src/utils";
+import { parseInteropPayload, stripInteropPayload } from "../../src/core/interop";
+import { parseVodMessage } from "../../src/core/utils";
 
 describe("interop payload utils", () => {
   const command = '!клип {from:"twitch";to:"182834";username:"Nikitawrik"} 05:00 - 10:00 480p';

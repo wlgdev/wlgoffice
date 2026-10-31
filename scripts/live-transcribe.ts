@@ -1,10 +1,10 @@
 import { Twitch } from "@shevernitskiy/scraperator";
 
 import config from "../src/config";
-import { fromTwitchVariant, isAudioOnlyVariant, pickVariant } from "../src/hls";
-import { LiveTranscriber } from "../src/live-transcriber";
+import { timeStringFromTs } from "../src/core/utils";
 import logger from "../src/logger";
-import { timeStringFromTs } from "../src/utils";
+import { fromTwitchVariant, isAudioOnlyVariant, pickVariant } from "../src/services/hls";
+import { LiveTranscriber } from "../src/services/live-transcriber";
 
 const args = process.argv.slice(2);
 const channel = args.find((a) => !a.startsWith("--")) ?? "welovegames";

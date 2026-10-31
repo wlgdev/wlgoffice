@@ -14,7 +14,7 @@ import {
   POLISH_MODEL,
   PRIMARY_STT_MODEL,
   RateLimitError,
-} from "../../src/transcribe";
+} from "../../src/services/transcribe";
 
 describe("transcribe service", () => {
   describe("constants and limits", () => {

@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import type { FfmpegRunResult } from "../../src/ffmpeg";
-import { type HlsStreamResult, type MuteStats, QualityNotFoundError } from "../../src/hls";
-import type { InteropPayload } from "../../src/interop";
+import type { InteropPayload } from "../../src/core/types";
+import type { FfmpegRunResult } from "../../src/services/ffmpeg";
+import { type HlsStreamResult, type MuteStats, QualityNotFoundError } from "../../src/services/hls";
+import { FALLBACK_STT_MODEL, PRIMARY_STT_MODEL } from "../../src/services/transcribe";
 import {
   buildCaption,
   buildQualityNotFoundStatus,
@@ -13,8 +14,7 @@ import {
   formatMuteBadge,
   toTelegramHtml,
   transcriptBadge,
-} from "../../src/telegram";
-import { FALLBACK_STT_MODEL, PRIMARY_STT_MODEL } from "../../src/transcribe";
+} from "../../src/telegram/formatters";
 
 describe("telegram formatters", () => {
   describe("escapeHtml and toTelegramHtml", () => {

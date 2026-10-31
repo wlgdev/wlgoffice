@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { pickVariant } from "../../src/hls";
-import { parseVkMasterPlaylist } from "../../src/vk";
+import { pickVariant } from "../../src/services/hls";
+import { parseVkMasterPlaylist } from "../../src/services/vk";
 
 describe("vk service", () => {
   const master = "https://vkvd.okcdn.ru/srcIp/1.2.3.4/pr/71/x.m3u8";

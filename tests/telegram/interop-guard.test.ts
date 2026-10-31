@@ -3,8 +3,8 @@ import { describe, expect, test } from "bun:test";
 import type { MessageContext } from "@mtcute/dispatcher";
 
 import config from "../../src/config";
-import type { InteropPayload } from "../../src/interop";
-import { validateInterop } from "../../src/telegram";
+import type { InteropPayload } from "../../src/core/types";
+import { validateInterop } from "../../src/telegram/interop-guard";
 
 describe("telegram interop guard", () => {
   const allowedChatId = config.interop.chatIds[0]!;

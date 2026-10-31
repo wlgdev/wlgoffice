@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 
 import config from "../../src/config";
-import { remuxHlsStream, resolveFfmpegBinary } from "../../src/ffmpeg";
+import { remuxHlsStream, resolveFfmpegBinary } from "../../src/services/ffmpeg";
 
 describe("ffmpeg service", () => {
   describe("resolveFfmpegBinary", () => {
