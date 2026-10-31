@@ -18,7 +18,7 @@
   "dependencies": {
     "@mtcute/bun": "^0.32.0",
     "@mtcute/dispatcher": "^0.32.0",
-    "@shevernitskiy/llm": "npm:@jsr/shevernitskiy__llm@^0.0.28",
+    "@shevernitskiy/llm": "npm:@jsr/shevernitskiy__llm@^0.0.32",
     "@shevernitskiy/scraperator": "npm:@jsr/shevernitskiy__scraperator@^0.0.143"
   },
   "devDependencies": {
