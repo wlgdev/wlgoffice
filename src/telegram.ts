@@ -80,18 +80,18 @@ dp.onCallbackQuery(async (q) => {
 
 // ─── Хелперы ─────────────────────────────────────────────────
 
-function toTelegramHtml(text: string) {
+export function toTelegramHtml(text: string) {
   return html(text.replace(/\r?\n/g, "<br>"));
 }
 
-function escapeHtml(text: string) {
+export function escapeHtml(text: string) {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 /**
  * Строка «откуда инициирован запрос и кто его отправил» — для статуса и подписи клипа.
  */
-function buildRequesterLine(interop: InteropPayload | null): string {
+export function buildRequesterLine(interop: InteropPayload | null): string {
   if (!interop) {
     return "";
   }
@@ -103,7 +103,7 @@ function buildRequesterLine(interop: InteropPayload | null): string {
  * Проверяет интероп-запрос: откуда пришёл, куда можно слать.
  * Возвращает текст ошибки или null, если запрос корректен.
  */
-function validateInterop(msg: MessageContext, payload: InteropPayload): string | null {
+export function validateInterop(msg: MessageContext, payload: InteropPayload): string | null {
   // Peer в личке — это User (type: "user"), в группах и каналах — Chat (type: "chat").
   if (msg.chat.type !== "user") {
     return "❌ <b>Интероп-запросы принимаются только в личке бота.</b>";
@@ -185,7 +185,7 @@ async function safeUpdateStatus(chatId: number | string, messageId: number, rawT
 /**
  * Бейдж статистики звука для строки клипа
  */
-function formatMuteBadge(stats: MuteStats): string {
+export function formatMuteBadge(stats: MuteStats): string {
   if (stats.mutedFound === 0) {
     return "🔊 чистый звук";
   }
@@ -198,7 +198,7 @@ function formatMuteBadge(stats: MuteStats): string {
 /**
  * Подпись к видеофайлу
  */
-function buildCaption(params: {
+export function buildCaption(params: {
   range: { rawStart: string; rawEnd: string };
   hls: HlsStreamResult;
   muteStats: MuteStats;
@@ -255,7 +255,7 @@ const STT_MODEL_LABELS: Record<string, string> = {
  * Подпись к файлу транскрипта. Показывает всё, что мог пойти не так:
  * какая модель распознавала, был ли fallback и удалось ли причесать текст.
  */
-function buildTranscriptCaption(params: {
+export function buildTranscriptCaption(params: {
   range: { rawStart: string; rawEnd: string };
   stt: SttResult;
   polish: PolishResult;
@@ -282,14 +282,14 @@ function buildTranscriptCaption(params: {
 }
 
 /** Короткий бейдж для строки статуса: какая модель и причесан ли текст. */
-function transcriptBadge(stt: SttResult, polish: PolishResult): string {
+export function transcriptBadge(stt: SttResult, polish: PolishResult): string {
   const model = stt.model === FALLBACK_STT_MODEL ? "V3 Turbo" : "V3";
   const quality = polish.polished ? "причесан" : "сырой";
   const warn = stt.model === FALLBACK_STT_MODEL ? " ⚠️" : "";
   return `${model}${warn} · ${quality}`;
 }
 
-function buildStatusMessage(vodId: string, statuses: string[], header?: string, subtitle?: string): string {
+export function buildStatusMessage(vodId: string, statuses: string[], header?: string, subtitle?: string): string {
   const title = header ?? `📥 <b>Обработка VOD <code>${vodId}</code></b>`;
   const sub = subtitle ? `${subtitle}\n` : "";
   return `${title}\n${sub}\n${statuses.join("\n")}`;
@@ -299,7 +299,7 @@ function buildStatusMessage(vodId: string, statuses: string[], header?: string, 
  * Строка статуса при отсутствии запрошенного качества в манифесте.
  * Ничего не качаем — сообщаем, что именно не найдено и что доступно.
  */
-function buildQualityNotFoundStatus(
+export function buildQualityNotFoundStatus(
   currentIndex: number,
   totalRanges: number,
   rawRange: string,

@@ -84,7 +84,7 @@ function requireApiKey(apiKey: string | undefined, envName: string): string {
  * Groq отдаёт retry-after только на 429; в теле ошибки дублирует его человекочитаемо.
  * Возвращает null, если восстановить время сброса не удалось.
  */
-function parseRetryAfter(err: LlmApiError): number | null {
+export function parseRetryAfter(err: LlmApiError): number | null {
   const fromHeader = Number(err.headers["retry-after"] ?? err.headers["Retry-After"]);
   if (Number.isFinite(fromHeader) && fromHeader >= 0) return fromHeader;
 
@@ -101,12 +101,12 @@ function parseRetryAfter(err: LlmApiError): number | null {
  * с LlmApiError (status 200, "empty response"). Это не сбой, а пустой результат —
  * переводим в собственный тип, чтобы хендлер показал понятный статус.
  */
-function isEmptyTranscript(err: unknown): boolean {
+export function isEmptyTranscript(err: unknown): boolean {
   return err instanceof LlmApiError && err.status === 200 && /empty response/i.test(err.message);
 }
 
 /** Короткое человекочитаемое описание сбоя для статуса в чате. */
-function describeFailure(err: unknown): string {
+export function describeFailure(err: unknown): string {
   if (err instanceof LlmApiError) {
     // status 2xx у Groq/Gemini означает не API-ошибку, а пустой результат
     if (err.status >= 200 && err.status < 300) return "пустой ответ модели";

@@ -1,9 +1,9 @@
 import { Twitch } from "@shevernitskiy/scraperator";
 
 import config from "../src/config";
-import logger from "../src/logger";
 import { fromTwitchVariant, isAudioOnlyVariant, pickVariant } from "../src/hls";
 import { LiveTranscriber } from "../src/live-transcriber";
+import logger from "../src/logger";
 import { timeStringFromTs } from "../src/utils";
 
 const args = process.argv.slice(2);
