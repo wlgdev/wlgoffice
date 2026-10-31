@@ -344,6 +344,7 @@ bun --env-file=.env.development src/main.ts  # dev (скрипт bun run start)
 | `INTEROP_TWITCH_CHANNEL` | нет         | `welovegames`                          | Twitch-канал для интероп-запросов, если в payload нет `channel`                            |
 | `STORAGE`                | нет         | `db/session.sqlite`                    | Путь к SQLite-сессии mtcute                                                                |
 | `TMP_DIR`                | нет         | `tmp`                                  | Каталог временных MP4                                                                      |
+| `DB_PATH`                | нет         | `db/db.sqlite`                         | Путь к SQLite-БД внутреннего kv-хранилища (`src/services/db.ts`)                           |
 
 > `.env*` файлы в `.gitignore` — примеры значений не коммитить. Прод-сборка читает `.env`, dev-запуск — `.env.development`.
 
@@ -368,5 +369,6 @@ bun --env-file=.env.development src/main.ts  # dev (скрипт bun run start)
 - [Twitch VOD / HLS](https://dev.twitch.tv/docs/video-broadcast/) — устройство VOD и манифестов
 - [FFmpeg docs](https://ffmpeg.org/documentation.html) — ремукс (`-c copy`, `-movflags +faststart`), поиск `ffmpeg.exe` — `src/ffmpeg.ts: resolveFfmpegBinary`
 - Структура кода: `src/main.ts` (вход) → `src/telegram.ts` (хендлеры `!клип`/`!аудио`/`!транскрипт`, статусы, загрузка) → `src/hls.ts` (общее ядро: варианты, сегменты, unmute) + `src/vk.ts` (VK-специфика) + `src/twitch.ts` (VOD текущего эфира по алиасу канала) → `src/ffmpeg.ts` (ремукс в файл/стрим) → `src/transcribe.ts` (Whisper + Gemini, лимиты Groq) → `src/utils.ts` (парсинг команды) + `src/interop.ts` (payload внешних ботов) → `src/config.ts` (env/flags) → `src/logger.ts`
+- Внутреннее kv-хранилище: `src/services/db.ts` — тонкий слой над SQLite (`bun:sqlite`), одна идемпотентная миграция при старте, API `get`/`set`/`delete` + JSON-обёртки `getJson`/`setJson`. Ключи именуются с префиксом-неймспейсом `<область>:<сущность>:<id>`, например `state:clip:42`, `clip:notify:100`
 
 <p align="right">(<a href="#top">back to top</a>)</p>

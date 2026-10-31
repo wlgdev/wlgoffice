@@ -3,6 +3,7 @@ import { Dispatcher } from "@mtcute/dispatcher";
 
 import config from "../config";
 import logger from "../logger";
+import { DB } from "../services/db";
 import { setupCallbackHandler } from "./handlers/callback.handler";
 import { setupMessageHandler } from "./handlers/message.handler";
 
@@ -21,6 +22,8 @@ export const tg = new TelegramClient({
 });
 
 export const dp = Dispatcher.for(tg);
+
+export const db = new DB(config.db.path);
 
 dp.onError((err, update) => {
   logger.error("⚠️ [Dispatcher Error]:", err, "Update:", update);

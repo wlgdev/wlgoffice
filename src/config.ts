@@ -109,6 +109,7 @@ if (storageDir && storageDir !== ".") {
   mkdirSync(storageDir, { recursive: true });
 }
 
+const dbPath = process.env.DB_PATH || "db/db.sqlite";
 const tmpDir = process.env.TMP_DIR || "tmp";
 mkdirSync(tmpDir, { recursive: true });
 
@@ -127,6 +128,9 @@ export default {
   interop: {
     chatIds: parseChatIds(interopChatIdsRaw),
     twitchChannel: process.env.INTEROP_TWITCH_CHANNEL?.trim() || undefined,
+  },
+  db: {
+    path: dbPath,
   },
   proxy: process.env.PROXY ? "https://boostyflare.mahahuha5816.workers.dev/" : undefined,
   twitch: {
