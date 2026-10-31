@@ -5,6 +5,71 @@ export interface ParsedTimeRange {
   rawEnd: string;
 }
 
+export function humanizeDuration(durationMs: number): string {
+  // Handle non-positive durations
+  if (durationMs <= 0) {
+    return "0с";
+  }
+
+  // Define time constants in milliseconds
+  const msPerSecond = 1000;
+  const msPerMinute = 60 * msPerSecond;
+  const msPerHour = 60 * msPerMinute;
+  const msPerDay = 24 * msPerHour;
+  const msPerYear = 365 * msPerDay; // Approximation, ignores leap years
+
+  let remainingMs = durationMs;
+  const parts: string[] = [];
+
+  // Calculate years
+  const years = Math.floor(remainingMs / msPerYear);
+  if (years > 0) {
+    parts.push(`${years}г`);
+    remainingMs %= msPerYear;
+  }
+
+  // Calculate days
+  const days = Math.floor(remainingMs / msPerDay);
+  if (days > 0) {
+    parts.push(`${days}д`);
+    remainingMs %= msPerDay;
+  }
+
+  // Calculate hours
+  const hours = Math.floor(remainingMs / msPerHour);
+  if (hours > 0) {
+    parts.push(`${hours}ч`);
+    remainingMs %= msPerHour;
+  }
+
+  // Calculate minutes
+  const minutes = Math.floor(remainingMs / msPerMinute);
+  if (minutes > 0) {
+    parts.push(`${minutes}м`);
+    remainingMs %= msPerMinute;
+  }
+
+  const seconds = Math.floor(remainingMs / msPerSecond);
+  if (seconds > 0) {
+    parts.push(`${seconds}с`);
+  }
+
+  if (parts.length === 0) {
+    return "0с";
+  }
+
+  return parts.join(" ");
+}
+
+export function timeStringFromTs(ms: number, offsetMs = 0) {
+  ms += offsetMs;
+  const secondsTotal = (ms / 1000) | 0;
+  const h = ((secondsTotal / 3600) % 24) | 0;
+  const m = ((secondsTotal / 60) % 60) | 0;
+  const s = secondsTotal % 60;
+  return (h < 10 ? "0" + h : h) + ":" + (m < 10 ? "0" + m : m) + ":" + (s < 10 ? "0" + s : s);
+}
+
 /**
  * Конвертирует строку времени вида "ЧЧ:ММ:СС", "ММ:СС" или "СС" в секунды.
  * Возвращает null, если формат некорректен.
