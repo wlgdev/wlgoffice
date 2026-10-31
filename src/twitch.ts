@@ -29,28 +29,29 @@ export class LiveVodNotFoundError extends Error {
 
 /**
  * Чистая часть: выбирает VOD текущего эфира из ответа Twitch.
- * Эфир должен быть онлайн, а broadcast id последнего архива — совпадать со stream id.
+ * Эфир должен быть онлайн, а broadcast id одного из последних архивов — совпадать со stream id.
  */
 export function pickLiveVod(vods: TwitchVodInfo[], info: TwitchStreamInfo): LiveVod | null {
   if (!info.online) {
     return null;
   }
 
-  const last = vods[0];
+  const match = vods.find((vod) => String(vod.broadcast_id) === String(info.id));
 
-  if (!last || String(last.broadcast_id) !== String(info.id)) {
+  if (!match) {
     return null;
   }
 
   return {
-    vodId: last.id,
-    vodUrl: `https://www.twitch.tv/videos/${last.id}`,
-    title: last.title,
+    vodId: match.id,
+    vodUrl: `https://www.twitch.tv/videos/${match.id}`,
+    title: match.title,
   };
 }
 
 /**
- * Находит VOD текущего эфира канала: последний архив + состояние стрима.
+ * Находит VOD текущего эфира канала: последние 10 архивов + состояние стрима.
+ * Эфир может быть онлайн, но архив ещё не опубликован — поэтому до трёх попыток с паузой.
  */
 export async function resolveLiveVod(channel: string, options: { proxy?: string; oauth?: string }): Promise<LiveVod> {
   const twitch = new Twitch(channel, {
@@ -58,21 +59,36 @@ export async function resolveLiveVod(channel: string, options: { proxy?: string;
     OAuthToken: options.oauth,
   });
 
-  const [vods, info] = await Promise.all([
-    twitch.vods("TIME", 1, "ARCHIVE").catch((err) => {
-      logger.warn(`[Twitch] Не удалось получить список VOD для "${channel}":`, err);
-      return [] as TwitchVodInfo[];
-    }),
-    twitch.streamInfo(),
-  ]);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const [vods, info] = await Promise.all([
+      twitch.vods("TIME", 10, "ARCHIVE").catch((err) => {
+        logger.warn(`[Twitch] Не удалось получить список VOD для "${channel}":`, err);
+        return [] as TwitchVodInfo[];
+      }),
+      twitch.streamInfo(),
+    ]);
 
-  const live = pickLiveVod(vods ?? [], info);
+    const live = pickLiveVod(vods ?? [], info);
 
-  if (!live) {
-    throw info.online ? new LiveVodNotFoundError(channel) : new ChannelOfflineError(channel);
+    if (live) {
+      logger.info(`[Twitch] ${channel} в эфире, VOD ${live.vodId} ("${live.title}")`);
+      return live;
+    }
+
+    if (!info.online) {
+      throw new ChannelOfflineError(channel);
+    }
+
+    const last = vods?.[0];
+
+    if (attempt < 3) {
+      logger.warn(
+        `[Twitch] Архив текущего эфира "${channel}" ещё не найден (попытка ${attempt}/3, ` +
+          `stream id ${info.id}, последний архив ${last ? `${last.id} (broadcast ${last.broadcast_id})` : "отсутствует"})`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
   }
 
-  logger.info(`[Twitch] ${channel} в эфире, VOD ${live.vodId} ("${live.title}")`);
-
-  return live;
+  throw new LiveVodNotFoundError(channel);
 }
