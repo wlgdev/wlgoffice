@@ -1,7 +1,9 @@
 import { InputMedia, type TelegramClient } from "@mtcute/bun";
 import type { Dispatcher, MessageContext } from "@mtcute/dispatcher";
+import { PropagationAction } from "@mtcute/dispatcher";
 
 import config from "../../config";
+import { resolveChatAccess } from "../../core/chat-target";
 import { parseInteropPayload, stripInteropPayload } from "../../core/interop";
 import type { AudioPick, InteropPayload } from "../../core/types";
 import { parseVodMessage, parseVodMode, safeDeleteFile } from "../../core/utils";
@@ -26,16 +28,23 @@ import {
 } from "../formatters";
 import { validateInterop } from "../interop-guard";
 import { StatusTracker } from "../status-tracker";
+import { createTelegramPort } from "../telegram-port";
+import { getMessageThreadId } from "../topic";
 
 function isChannelChat(msg: MessageContext): boolean {
   return "chatType" in msg.chat && msg.chat.chatType === "channel";
 }
 
-function answerText(tg: TelegramClient, msg: MessageContext, text: ReturnType<typeof toTelegramHtml>) {
+function answerText(
+  tg: TelegramClient,
+  msg: MessageContext,
+  text: ReturnType<typeof toTelegramHtml>,
+  threadId?: number,
+) {
   if (isChannelChat(msg)) {
     return tg.sendText(msg.chat.id, text);
   }
-  return msg.replyText(text);
+  return msg.replyText(text, { threadId });
 }
 
 export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
@@ -43,13 +52,14 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
     let tracker: StatusTracker | undefined;
     let interop: InteropPayload | null = null;
     let targetChatId: number | string = msg.chat.id;
+    let targetThreadId: number | undefined;
 
     try {
       const text = msg.text;
 
       if (text === "!ping") {
-        await answerText(tg, msg, toTelegramHtml("pong"));
-        return;
+        await answerText(tg, msg, toTelegramHtml("pong"), getMessageThreadId(msg));
+        return PropagationAction.Continue;
       }
 
       interop = text ? parseInteropPayload(text) : null;
@@ -57,22 +67,26 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
       const mode = cmdText ? parseVodMode(cmdText) : "video";
 
       if (!cmdText || (!cmdText.trim().startsWith("!клип") && mode === "video")) {
-        return;
+        return PropagationAction.Continue;
       }
 
       if (interop) {
         const problem = validateInterop(msg, interop);
         if (problem) {
           await answerText(tg, msg, toTelegramHtml(problem));
-          return;
+          return PropagationAction.Continue;
         }
         targetChatId = interop.to!;
-      } else if (!config.telegram.chatIds.includes(msg.chat.id)) {
-        return;
+      } else {
+        const access = resolveChatAccess(config.telegram.targets, msg.chat.id, getMessageThreadId(msg));
+        if (!access) {
+          return PropagationAction.Continue;
+        }
+        targetThreadId = access.threadId;
       }
 
       const sendStatus = async (statusText: ReturnType<typeof toTelegramHtml>) =>
-        interop ? tg.sendText(targetChatId, statusText) : answerText(tg, msg, statusText);
+        interop ? tg.sendText(targetChatId, statusText) : answerText(tg, msg, statusText, targetThreadId);
 
       const errorStatus = (body: string) => (interop ? `${body}\n${buildRequesterLine(interop)}` : body);
 
@@ -86,7 +100,7 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
         await sendStatus(
           toTelegramHtml(errorStatus(`❌ <b>Ошибка парсинга команды:</b> <code>${e?.message || e}</code>`)),
         );
-        return;
+        return PropagationAction.Continue;
       }
 
       if (interop) {
@@ -98,14 +112,14 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
               errorStatus(`❌ <b>Интероп:</b> источник <code>${escapeHtml(from)}</code> не поддерживается.`),
             ),
           );
-          return;
+          return PropagationAction.Continue;
         }
 
         if (from === "vk" && parsedVod.platform !== "vk") {
           await sendStatus(
             toTelegramHtml(errorStatus("❌ <b>Интероп:</b> для источника <code>vk</code> нужна ссылка на видео.")),
           );
-          return;
+          return PropagationAction.Continue;
         }
 
         if (from === "twitch") {
@@ -115,7 +129,7 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
                 errorStatus("❌ <b>Интероп:</b> источник <code>twitch</code>, но в команде ссылка на VK Видео."),
               ),
             );
-            return;
+            return PropagationAction.Continue;
           }
 
           const channel = interop.channel ?? config.interop.twitchChannel ?? DEFAULT_CHANNEL;
@@ -134,7 +148,7 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
             ),
           ),
         );
-        return;
+        return PropagationAction.Continue;
       }
 
       if (!parsedVod.ranges.length) {
@@ -143,7 +157,7 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
             errorStatus("❌ <b>Ошибка:</b> не найдены временные интервалы (например: <code>10:00 - 12:30</code>)."),
           ),
         );
-        return;
+        return PropagationAction.Continue;
       }
 
       const isVk = parsedVod.platform === "vk";
@@ -160,7 +174,7 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
               ? `Канал <code>${channelName}</code> сейчас не в эфире — клипить нечего.`
               : `Не удалось найти VOD текущего эфира канала <code>${channelName}</code>: ${e?.message || e}`;
           await sendStatus(toTelegramHtml(errorStatus(`❌ <b>Ошибка:</b> ${reason}`)));
-          return;
+          return PropagationAction.Continue;
         }
 
         vodId = live.vodId;
@@ -243,12 +257,12 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
             );
           } catch {}
         }
-        return;
+        return PropagationAction.Continue;
       }
 
       const initialLines = parsedVod.ranges.map((r) => `<code>${r.rawStart} - ${r.rawEnd}</code>`);
       tracker = new StatusTracker(
-        tg,
+        createTelegramPort(tg),
         statusMsg.chat.id,
         statusMsg.id,
         vodId,
@@ -315,7 +329,7 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
             tracker.setLine(i, `⬆️ ${tag} — отправка (${result.polish.text.length} символов)...`);
 
             try {
-              await tg.sendTyping(targetChatId, "upload_document");
+              await tg.sendTyping(targetChatId, "upload_document", { threadId: targetThreadId });
             } catch {}
 
             await tg.sendMedia(
@@ -332,7 +346,11 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
                   }),
                 ),
               }),
-              { replyMarkup: buildDeleteKeyboard(), replyTo: interop || isChannelChat(msg) ? undefined : msg.id },
+              {
+                replyMarkup: buildDeleteKeyboard(),
+                replyTo: interop || isChannelChat(msg) ? undefined : msg.id,
+                threadId: targetThreadId,
+              },
             );
 
             totalDurationSec += result.remux.duration;
@@ -392,7 +410,9 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
           tracker.setLine(i, `⬆️ ${tag} — загрузка в Telegram (${result.remux.sizeMB} MB)...`);
 
           try {
-            await tg.sendTyping(targetChatId, isAudio ? "upload_voice" : "upload_video");
+            await tg.sendTyping(targetChatId, isAudio ? "upload_voice" : "upload_video", {
+              threadId: targetThreadId,
+            });
           } catch {}
 
           const caption = buildCaption({
@@ -424,6 +444,7 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
             {
               replyMarkup: buildDeleteKeyboard(),
               replyTo: interop || isChannelChat(msg) ? undefined : msg.id,
+              threadId: targetThreadId,
             },
           );
 
@@ -472,7 +493,7 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
             toTelegramHtml(`✅ <b>Готово:</b> ${successCount} из ${totalRanges} в чат <code>${targetChatId}</code>.`),
           );
         }
-        return;
+        return PropagationAction.Continue;
       }
 
       let finalHeader = `⚠️ <b>Обработка завершена</b> (Успешно: ${successCount} из ${totalRanges})`;
@@ -531,5 +552,7 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
         } catch {}
       }
     }
+
+    return PropagationAction.Continue;
   });
 }

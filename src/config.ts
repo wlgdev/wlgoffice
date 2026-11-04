@@ -1,16 +1,15 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
+import { parseChatTargets } from "./core/chat-target";
+
+export function parseFlag(raw?: string): boolean {
+  const value = raw?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
 export function parseChatIds(raw?: string): number[] {
-  const ids = (raw ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map(Number);
-  if (!ids.length || ids.some((n) => !Number.isFinite(n))) {
-    throw new Error("CHAT_ID is not defined");
-  }
-  return ids;
+  return parseChatTargets(raw).map((target) => Number(target.chatId));
 }
 
 /**
@@ -97,12 +96,11 @@ try {
   if (!process.env.BOT_TOKEN) {
     throw new Error("BOT_TOKEN is not defined");
   }
-  parseChatIds(process.env.CHAT_ID);
+  parseChatTargets(process.env.CHAT_ID);
 } catch (error) {
   console.error(error);
   process.exit(1);
 }
-
 const storagePath = process.env.STORAGE || "db/session.sqlite";
 const storageDir = dirname(storagePath);
 if (storageDir && storageDir !== ".") {
@@ -114,8 +112,16 @@ const tmpDir = process.env.TMP_DIR || "tmp";
 mkdirSync(tmpDir, { recursive: true });
 
 // Чаты, куда бот вправе отправлять клипы по интероп-запросам от внешних ботов.
-// По умолчанию — те же чаты, что и для обычных команд.
-const interopChatIdsRaw = process.env.INTEROP_CHAT_IDS?.trim() ? process.env.INTEROP_CHAT_IDS : process.env.CHAT_ID;
+// По умолчанию — те же чаты, что и для обычных команд. Треды в интеропе не используются.
+const chatTargets = parseChatTargets(process.env.CHAT_ID);
+const interopRaw = process.env.INTEROP_CHAT_IDS?.trim() ? process.env.INTEROP_CHAT_IDS : undefined;
+const interopChatIds = [
+  ...new Set(
+    (interopRaw ? parseChatTargets(interopRaw, "INTEROP_CHAT_IDS") : chatTargets).map((target) =>
+      Number(target.chatId),
+    ),
+  ),
+];
 
 export default {
   telegram: {
@@ -123,10 +129,11 @@ export default {
     apiHash: process.env.API_HASH,
     storage: storagePath,
     botToken: process.env.BOT_TOKEN,
-    chatIds: parseChatIds(process.env.CHAT_ID),
+    chatIds: [...new Set(chatTargets.map((target) => Number(target.chatId)))],
+    targets: chatTargets,
   },
   interop: {
-    chatIds: parseChatIds(interopChatIdsRaw),
+    chatIds: interopChatIds,
     twitchChannel: process.env.INTEROP_TWITCH_CHANNEL?.trim() || undefined,
   },
   db: {
@@ -142,6 +149,13 @@ export default {
   },
   gemini: {
     apiKey: process.env.GEMINI_APIKEY,
+  },
+  tracker: {
+    pollIntervalSec: Number(process.env.TRACKER_POLL_SEC) || 60,
+    dedupeWindowSec: Number(process.env.TRACKER_DEDUPE_SEC) || 30,
+    staleTimeoutMs: Number(process.env.TRACKER_STALE_TIMEOUT_MS) || 120000,
+    timeOffsetSec: Number(process.env.TRACKER_TIME_OFFSET_SEC) || 0,
+    debugTranscript: parseFlag(process.env.TRACKER_DEBUG_TRANSCRIPT),
   },
   tmpDir,
 };

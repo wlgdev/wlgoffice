@@ -50,6 +50,11 @@ export class DB {
     return this.stmtGet.get(key)?.value ?? null;
   }
 
+  public keys(prefix: string): string[] {
+    const rows = this.db.query<{ key: string }, [string]>(`SELECT key FROM kv WHERE key LIKE ?`).all(`${prefix}%`);
+    return rows.map((row) => row.key);
+  }
+
   public set(key: string, value: string): void {
     this.stmtSet.run(key, value);
   }

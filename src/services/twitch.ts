@@ -42,6 +42,35 @@ export function pickLiveVod(vods: TwitchVodInfo[], info: TwitchStreamInfo): Live
   };
 }
 
+export async function findLiveVod(
+  channel: string,
+  broadcastId: string,
+  options: { proxy?: string; oauth?: string },
+): Promise<LiveVod | null> {
+  try {
+    const twitch = new Twitch(channel, {
+      proxy: options.proxy,
+      OAuthToken: options.oauth,
+    });
+
+    const vods = await twitch.vods("TIME", 10, "ARCHIVE");
+    const match = vods.find((vod) => String(vod.broadcast_id) === String(broadcastId));
+
+    if (!match) {
+      return null;
+    }
+
+    return {
+      vodId: match.id,
+      vodUrl: `https://www.twitch.tv/videos/${match.id}`,
+      title: match.title,
+    };
+  } catch (err) {
+    logger.warn(`[Twitch] Не удалось найти VOD эфира ${broadcastId} для "${channel}":`, err);
+    return null;
+  }
+}
+
 export async function resolveLiveVod(channel: string, options: { proxy?: string; oauth?: string }): Promise<LiveVod> {
   const twitch = new Twitch(channel, {
     proxy: options.proxy,

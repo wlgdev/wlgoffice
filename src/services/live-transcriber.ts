@@ -1,6 +1,7 @@
 import { GeminiLive, type GeminiLiveSession } from "@shevernitskiy/llm";
 
 import logger from "../logger";
+import { ChunkClock } from "./chunk-clock";
 import { resolveFfmpegBinary } from "./ffmpeg";
 
 const BYTES_PER_SECOND = 16000 * 2;
@@ -18,6 +19,7 @@ export interface LiveTranscriberOptions {
   systemInstruction?: string;
   durationSec?: number;
   streamStartEpochMs?: number;
+  staleTimeoutMs?: number;
 }
 
 export type TranscriptionHandler = (chunk: LiveTranscriptionChunk) => void;
@@ -31,6 +33,7 @@ export class LiveTranscriber {
   private sentBytes = 0;
   private offsetSec = 0;
   private textHandlers = new Set<TranscriptionHandler>();
+  private clock = new ChunkClock(0);
 
   constructor(options: LiveTranscriberOptions) {
     this.options = options;
@@ -61,12 +64,14 @@ export class LiveTranscriber {
         inputTranscription: true,
         timeout: 30000,
         systemInstruction: this.options.systemInstruction,
+        staleTimeout: this.options.staleTimeoutMs,
       });
       this.session = session;
 
       const receiveTask = this.receiveLoop(session);
 
       this.offsetSec = await this.resolveOffsetSec();
+      this.clock = new ChunkClock(this.offsetSec);
 
       const ffmpeg = Bun.spawn(
         [
@@ -135,13 +140,20 @@ export class LiveTranscriber {
     return 0;
   }
 
+  /**
+   * Время начала аудио, соответствующего очередному куску транскрипции.
+   */
+  private takeChunkTimeSec(): number {
+    return this.clock.take(this.offsetSec + this.sentBytes / BYTES_PER_SECOND);
+  }
+
   private async receiveLoop(session: GeminiLiveSession): Promise<void> {
     try {
       for await (const event of session.receive()) {
         if (event.type === "inputTranscription" && event.text.trim()) {
           const chunk: LiveTranscriptionChunk = {
             text: event.text,
-            timeSec: this.offsetSec + this.sentBytes / BYTES_PER_SECOND,
+            timeSec: this.takeChunkTimeSec(),
           };
           for (const handler of this.textHandlers) {
             try {
