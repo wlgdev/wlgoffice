@@ -334,4 +334,54 @@ describe("tracker session", () => {
       console.log = original;
     }
   });
+
+  test("счётчики: байты в Gemini и полученные символы", async () => {
+    const { session, created } = createHarness();
+    const run = session.run();
+
+    await waitFor(() => created.length === 1);
+    created[0]!.sendAudio(6400);
+    created[0]!.emit("привет", 10);
+
+    expect(session.state().sentBytes).toBe(6400);
+    expect(session.state().receivedChars).toBe(6);
+
+    session.stop();
+    await run;
+  });
+
+  test("статус закрепляется при первом совпадении и открепляется по окончании эфира", async () => {
+    const { session, telegram, twitch, created } = createHarness();
+    const run = session.run();
+
+    await waitFor(() => created.length === 1);
+    created[0]!.emit("ggsel", 100);
+    await waitFor(() => telegram.pinned.length === 1);
+
+    expect(telegram.pinned[0]).toEqual({ chatId: -100, messageId: 1000 });
+
+    twitch.online = false;
+    created[0]!.stop();
+
+    expect(await run).toBe("ended");
+    expect(telegram.unpinned).toEqual([{ chatId: -100, messageId: 1000 }]);
+  });
+
+  test("реконнект: статус остаётся закреплённым", async () => {
+    const { session, telegram, created } = createHarness();
+    const run = session.run();
+
+    await waitFor(() => created.length === 1);
+    created[0]!.emit("ggsel", 100);
+    await waitFor(() => telegram.pinned.length === 1);
+
+    created[0]!.stop();
+    await waitFor(() => created.length === 2);
+
+    expect(telegram.pinned).toHaveLength(1);
+    expect(telegram.unpinned).toHaveLength(0);
+
+    session.stop();
+    await run;
+  });
 });

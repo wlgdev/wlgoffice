@@ -16,6 +16,8 @@ export interface TelegramMessagePort {
     options?: TelegramMessagePortOptions,
   ): Promise<void>;
   deleteMessage(chatId: number | string, messageId: number): Promise<void>;
+  pinMessage(chatId: number | string, messageId: number): Promise<void>;
+  unpinMessage(chatId: number | string, messageId: number): Promise<void>;
 }
 
 export function classifyTelegramError(err: unknown): MessageEditError {

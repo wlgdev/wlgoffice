@@ -48,6 +48,8 @@ function storedSession(overrides: Partial<TrackerSessionState> = {}): TrackerSes
     vodTitle: "VOD",
     hits: [{ alias: "ggsel", text: "ggsel", timeSec: 100 }],
     counts: { ggsel: 1 },
+    sentBytes: 0,
+    receivedChars: 0,
     startedAt: 0,
     updatedAt: 0,
     status: "active",
@@ -76,6 +78,7 @@ describe("tracker service", () => {
     expect(created).toHaveLength(0);
     expect(telegram.edits.at(-1)!.messageId).toBe(555);
     expect(telegram.edits.at(-1)!.text).toContain("Эфир завершён");
+    expect(telegram.unpinned).toEqual([{ chatId: -100, messageId: 555 }]);
     expect(store.getSession("welovegames")?.status).toBe("closed");
   });
 
@@ -171,5 +174,20 @@ describe("tracker service", () => {
     store.saveSettings(setEnabled(store.getSettings(), "welovegames", false));
     await service.tick();
     await waitFor(() => telegram.edits.some((edit) => edit.text.includes("Эфир завершён")));
+  });
+
+  test("активные сессии отдаются списком", async () => {
+    const { service, enable, created } = createHarness();
+    enable();
+
+    await service.tick();
+    await waitFor(() => created.length === 1);
+
+    const sessions = service.listActiveSessions();
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.channel).toBe("welovegames");
+    expect(sessions[0]!.broadcastId).toBe("broadcast-1");
+    expect(sessions[0]!.status).toBe("active");
   });
 });

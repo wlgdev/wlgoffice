@@ -29,6 +29,8 @@ export interface TrackerSessionState {
   vodTitle?: string;
   hits: TrackerHit[];
   counts: Record<string, number>;
+  sentBytes: number;
+  receivedChars: number;
   startedAt: number;
   startTimeMs?: number;
   updatedAt: number;
@@ -58,6 +60,7 @@ export interface TrackerTranscriberOptions {
   systemInstruction?: string;
   streamStartEpochMs?: number;
   staleTimeoutMs?: number;
+  onAudioSent?: (bytes: number) => void;
 }
 
 export interface TrackerTranscriber {

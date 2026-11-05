@@ -40,6 +40,7 @@ export interface LiveTranscriberOptions {
   maxSpanSec?: number;
   /** Нижняя граница скорости речи для ограничения отката начала куска, симв/с (по умолчанию 5, 0 = выкл). */
   minCharsPerSec?: number;
+  onAudioSent?: (bytes: number) => void;
 }
 
 export type TranscriptionHandler = (chunk: LiveTranscriptionChunk) => void;
@@ -382,6 +383,7 @@ export class LiveTranscriber {
           session.sendAudio(data.subarray(i * CHUNK_BYTES, (i + 1) * CHUNK_BYTES));
           lastSentAt = Date.now();
           this.sentBytes += CHUNK_BYTES;
+          this.options.onAudioSent?.(CHUNK_BYTES);
         }
       }
     } catch (err) {

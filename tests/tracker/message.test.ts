@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildTrackerMessage, formatDate, formatTimestamp, formatTwitchTime } from "../../src/tracker/message";
+import {
+  buildSessionsMessage,
+  buildTrackerMessage,
+  formatBytes,
+  formatCharCount,
+  formatDate,
+  formatTimestamp,
+  formatTwitchTime,
+} from "../../src/tracker/message";
 import type { TrackerSessionState } from "../../src/tracker/types";
 
 function state(overrides: Partial<TrackerSessionState> = {}): TrackerSessionState {
@@ -12,6 +20,8 @@ function state(overrides: Partial<TrackerSessionState> = {}): TrackerSessionStat
     vodTitle: "Ночной стрим",
     hits: [],
     counts: {},
+    sentBytes: 0,
+    receivedChars: 0,
     startedAt: new Date(2026, 10, 1).getTime(),
     startTimeMs: new Date(2026, 10, 1).getTime(),
     updatedAt: 0,
@@ -119,5 +129,44 @@ describe("tracker message", () => {
     expect(text.length).toBeLessThanOrEqual(4096);
     expect(text).toContain("…ещё");
     expect(text.match(/<a href="https:\/\/www\.twitch\.tv\/videos\/vod-1\?t=/g)!.length).toBeLessThanOrEqual(90);
+  });
+
+  test("формат объёма данных", () => {
+    expect(formatBytes(0)).toBe("0 Б");
+    expect(formatBytes(900)).toBe("900 Б");
+    expect(formatBytes(1024)).toBe("1.0 КБ");
+    expect(formatBytes(5 * 1024 * 1024)).toBe("5.0 МБ");
+    expect(formatBytes(3 * 1024 * 1024 * 1024)).toBe("3.0 ГБ");
+  });
+
+  test("формат количества символов", () => {
+    expect(formatCharCount(0)).toBe("0");
+    expect(formatCharCount(999)).toBe("999");
+    expect(formatCharCount(1000)).toBe("1.0 тыс.");
+    expect(formatCharCount(45678)).toBe("45.7 тыс.");
+  });
+
+  test("сводка активных сессий: без сессий пустая", () => {
+    expect(buildSessionsMessage([])).toBe("");
+  });
+
+  test("сводка активных сессий: канал, эфир, расход и символы", () => {
+    const text = buildSessionsMessage([
+      state({
+        broadcastId: "123456789",
+        sentBytes: 12 * 1024 * 1024,
+        receivedChars: 4567,
+        startedAt: Date.now() - 3_600_000,
+        startTimeMs: new Date(2026, 10, 1, 14, 23).getTime(),
+      }),
+    ]);
+
+    expect(text).toContain("🔎 <b>Активные сессии</b>");
+    expect(text).toContain("<b>@welovegames</b>");
+    expect(text).toContain("<code>123456789</code>");
+    expect(text).toContain("01.11.2026 14:23");
+    expect(text).toContain("1ч");
+    expect(text).toContain("12.0 МБ");
+    expect(text).toContain("4.6 тыс.");
   });
 });

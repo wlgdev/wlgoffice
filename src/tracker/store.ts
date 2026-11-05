@@ -20,7 +20,13 @@ export class TrackerStore {
     if (!state || typeof state !== "object" || typeof state.channel !== "string") {
       return null;
     }
-    return { ...state, hits: state.hits ?? [], counts: state.counts ?? {} };
+    return {
+      ...state,
+      hits: state.hits ?? [],
+      counts: state.counts ?? {},
+      sentBytes: state.sentBytes ?? 0,
+      receivedChars: state.receivedChars ?? 0,
+    };
   }
 
   saveSession(state: TrackerSessionState): void {

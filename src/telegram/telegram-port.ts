@@ -23,5 +23,11 @@ export function createTelegramPort(tg: TelegramClient): TelegramMessagePort {
     async deleteMessage(chatId, messageId) {
       await tg.deleteMessagesById(chatId, [messageId]);
     },
+    async pinMessage(chatId, messageId) {
+      await tg.pinMessage({ chatId, message: messageId });
+    },
+    async unpinMessage(chatId, messageId) {
+      await tg.unpinMessage({ chatId, message: messageId });
+    },
   };
 }

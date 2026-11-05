@@ -13,6 +13,8 @@ export class FakeTelegram implements TelegramMessagePort {
   sent: { chatId: number | string; text: string; disableWebPreview?: boolean; threadId?: number }[] = [];
   edits: { chatId: number | string; messageId: number; text: string; disableWebPreview?: boolean }[] = [];
   deleted: { chatId: number | string; messageId: number }[] = [];
+  pinned: { chatId: number | string; messageId: number }[] = [];
+  unpinned: { chatId: number | string; messageId: number }[] = [];
   editError?: Error;
   sendError?: Error;
   private nextId = 1000;
@@ -48,6 +50,14 @@ export class FakeTelegram implements TelegramMessagePort {
 
   async deleteMessage(chatId: number | string, messageId: number): Promise<void> {
     this.deleted.push({ chatId, messageId });
+  }
+
+  async pinMessage(chatId: number | string, messageId: number): Promise<void> {
+    this.pinned.push({ chatId, messageId });
+  }
+
+  async unpinMessage(chatId: number | string, messageId: number): Promise<void> {
+    this.unpinned.push({ chatId, messageId });
   }
 }
 
@@ -125,6 +135,10 @@ export class FakeTranscriber implements TrackerTranscriber {
     for (const handler of [...this.handlers]) {
       handler({ text, timeSec });
     }
+  }
+
+  sendAudio(bytes: number): void {
+    this.options.onAudioSent?.(bytes);
   }
 }
 

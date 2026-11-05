@@ -1,3 +1,4 @@
+import { humanizeDuration } from "../core/utils";
 import { escapeHtml } from "../telegram/formatters";
 import { type MessageEditError, MessageEditor, type TelegramMessagePort } from "../telegram/message-editor";
 import type { TrackerHit, TrackerSessionState } from "./types";
@@ -6,6 +7,7 @@ const VOD_BASE_URL = "https://www.twitch.tv/videos/";
 const CHANNEL_BASE_URL = "https://www.twitch.tv/";
 const MAX_MESSAGE_LENGTH = 4096;
 const MAX_LINKS = 90;
+const BYTE_UNITS = ["Б", "КБ", "МБ", "ГБ"];
 
 export function formatTimestamp(totalSec: number): string {
   const seconds = Math.max(0, Math.floor(totalSec));
@@ -36,6 +38,31 @@ export function formatDate(epochMs: number): string {
   const day = String(date.getDate()).padStart(2, "0");
   const month = String(date.getMonth() + 1).padStart(2, "0");
   return `${day}.${month}.${date.getFullYear()}`;
+}
+
+export function formatTime(epochMs: number): string {
+  const date = new Date(epochMs);
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+export function formatBytes(bytes: number): string {
+  let value = Math.max(0, bytes);
+  let unit = 0;
+  while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  const rounded = unit === 0 ? String(Math.round(value)) : value.toFixed(1);
+  return `${rounded} ${BYTE_UNITS[unit]}`;
+}
+
+export function formatCharCount(chars: number): string {
+  if (chars < 1000) {
+    return String(chars);
+  }
+  return `${(chars / 1000).toFixed(1)} тыс.`;
 }
 
 function renderTimestamp(timeSec: number, count: number, vodId?: string): string {
@@ -142,6 +169,23 @@ export function buildTrackerMessage(state: TrackerSessionState): string {
 
   const body = lines.length ? `\n\n${lines.join("\n")}` : "";
   return `${header}${body}${footer}`;
+}
+
+export function buildSessionsMessage(states: TrackerSessionState[]): string {
+  if (!states.length) {
+    return "";
+  }
+
+  const lines = states.map((state) => {
+    const streamStart = state.startTimeMs ?? state.startedAt;
+    const uptime = humanizeDuration(Date.now() - state.startedAt);
+    return [
+      `• <b>@${escapeHtml(state.channel)}</b> — эфир <code>${escapeHtml(state.broadcastId)}</code>`,
+      `  эфир с ${formatDate(streamStart)} ${formatTime(streamStart)} · сессия ${uptime} (с ${formatTime(state.startedAt)}) · в Gemini: ${formatBytes(state.sentBytes)} · символов: ${formatCharCount(state.receivedChars)}`,
+    ].join("\n");
+  });
+
+  return `🔎 <b>Активные сессии</b>\n\n${lines.join("\n")}`;
 }
 
 /**

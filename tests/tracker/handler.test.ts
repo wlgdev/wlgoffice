@@ -8,7 +8,7 @@ import { handleTrackerMessage } from "../../src/telegram/handlers/tracker.handle
 import { TrackerService } from "../../src/tracker/service";
 import { setAlias, setChannel } from "../../src/tracker/settings";
 import { TrackerStore } from "../../src/tracker/store";
-import { FakeTelegram } from "./helpers";
+import { createTranscriberFactory, FakeTelegram, FakeTwitch, waitFor } from "./helpers";
 
 class FakeTg {
   sent: { chatId: number | string; text: string }[] = [];
@@ -44,6 +44,33 @@ function createService(): TrackerService {
     apiRetryDelaySec: 0,
     sleep: async () => {},
   });
+}
+
+async function createServiceWithSession(): Promise<TrackerService> {
+  const store = new TrackerStore(new DB(":memory:"));
+  store.saveSettings(setAlias(setChannel({ channels: {} }, "welovegames"), "welovegames", "ggsel", ["ggsel"]));
+  const { factory } = createTranscriberFactory();
+
+  const service = new TrackerService({
+    store,
+    twitch: new FakeTwitch(),
+    telegram: new FakeTelegram(),
+    createTranscriber: factory,
+    geminiApiKey: "test-key",
+    defaultChatId: -100,
+    pollIntervalSec: 60,
+    dedupeWindowSec: 30,
+    staleTimeoutMs: 1000,
+    reconnectBackoffSec: [],
+    apiRetryAttempts: 1,
+    apiRetryDelaySec: 0,
+    sleep: async () => {},
+  });
+
+  await service.tick();
+  await waitFor(() => service.listActiveSessions().length === 1);
+
+  return service;
 }
 
 describe("tracker handler", () => {
@@ -106,5 +133,18 @@ describe("tracker handler", () => {
 
     expect(tg.sent).toHaveLength(1);
     expect(tg.sent[0]!.text).toContain("Ошибка");
+  });
+
+  test("!tracker list показывает активные сессии", async () => {
+    const service = await createServiceWithSession();
+    const tg = new FakeTg();
+    const chatId = config.telegram.chatIds[0]!;
+
+    await handleTrackerMessage({ text: "!tracker list", chat: { id: chatId } }, tg, service);
+
+    expect(tg.sent).toHaveLength(1);
+    expect(tg.sent[0]!.text).toContain("Активные сессии");
+    expect(tg.sent[0]!.text).toContain("@welovegames");
+    expect(tg.sent[0]!.text).toContain("в Gemini:");
   });
 });

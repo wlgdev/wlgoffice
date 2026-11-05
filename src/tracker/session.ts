@@ -49,6 +49,8 @@ export interface LiveSessionOptions {
   vodTitle?: string;
   hits?: TrackerHit[];
   counts?: Record<string, number>;
+  sentBytes?: number;
+  receivedChars?: number;
   startedAt?: number;
 }
 
@@ -74,6 +76,9 @@ export class LiveSession {
   private vodTimer?: ReturnType<typeof setInterval>;
   private transcriber?: TrackerTranscriber;
   private readonly startedAt: number;
+  private sentBytes: number;
+  private receivedChars: number;
+  private pinnedMessageId?: number;
 
   constructor(
     private readonly deps: LiveSessionDeps,
@@ -82,6 +87,8 @@ export class LiveSession {
     this.matcher = new TrackerMatcher(opts.aliases, { dedupeWindowSec: deps.dedupeWindowSec });
     this.hits = opts.hits ?? [];
     this.counts = { ...(opts.counts ?? {}) };
+    this.sentBytes = opts.sentBytes ?? 0;
+    this.receivedChars = opts.receivedChars ?? 0;
     this.messageId = opts.messageId;
     this.vodId = opts.vodId;
     this.vodTitle = opts.vodTitle?.trim() || opts.streamTitle;
@@ -93,6 +100,7 @@ export class LiveSession {
       () => buildTrackerMessage(this.state()),
       (messageId) => {
         this.messageId = messageId;
+        void this.pin();
         this.persist();
       },
       this.deps.minEditDelayMs,
@@ -120,6 +128,7 @@ export class LiveSession {
   async run(): Promise<TrackerSessionEnd> {
     this.persist();
     this.startVodLookup();
+    await this.pin();
 
     try {
       while (!this.stopped) {
@@ -200,6 +209,9 @@ export class LiveSession {
         geminiApiKey: this.deps.geminiApiKey,
         streamStartEpochMs: this.opts.startTimeMs,
         staleTimeoutMs: this.deps.staleTimeoutMs,
+        onAudioSent: (bytes) => {
+          this.sentBytes += bytes;
+        },
       });
     } catch (err) {
       logger.warn(`[Tracker] Не удалось подключиться к аудио ${this.opts.channel}:`, err);
@@ -207,6 +219,7 @@ export class LiveSession {
     }
 
     const unsubscribe = transcriber.onText((chunk) => {
+      this.receivedChars += chunk.text.length;
       const adjusted = this.applyTimeOffset(chunk);
       this.logTranscript(adjusted);
       this.onText(adjusted);
@@ -343,7 +356,34 @@ export class LiveSession {
     this.status = "closed";
     await this.resolveVodOnClose();
     await this.message.flushExisting();
+    await this.unpin();
     this.persist();
+  }
+
+  private async pin(): Promise<void> {
+    const messageId = this.messageId;
+    if (!messageId || this.pinnedMessageId === messageId) {
+      return;
+    }
+    try {
+      await this.deps.telegram.pinMessage(this.opts.chatId, messageId);
+      this.pinnedMessageId = messageId;
+    } catch (err) {
+      logger.warn(`[Tracker] Не удалось закрепить статус ${this.opts.channel}:`, err);
+    }
+  }
+
+  private async unpin(): Promise<void> {
+    const messageId = this.pinnedMessageId;
+    if (!messageId) {
+      return;
+    }
+    this.pinnedMessageId = undefined;
+    try {
+      await this.deps.telegram.unpinMessage(this.opts.chatId, messageId);
+    } catch (err) {
+      logger.warn(`[Tracker] Не удалось открепить статус ${this.opts.channel}:`, err);
+    }
   }
 
   private async resolveVodOnClose(): Promise<void> {
@@ -358,7 +398,7 @@ export class LiveSession {
     }
   }
 
-  private state(): TrackerSessionState {
+  state(): TrackerSessionState {
     return {
       channel: this.opts.channel,
       broadcastId: this.opts.broadcastId,
@@ -369,6 +409,8 @@ export class LiveSession {
       vodTitle: this.vodTitle,
       hits: this.hits,
       counts: this.counts,
+      sentBytes: this.sentBytes,
+      receivedChars: this.receivedChars,
       startedAt: this.startedAt,
       startTimeMs: this.opts.startTimeMs,
       updatedAt: Date.now(),

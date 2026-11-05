@@ -24,6 +24,10 @@ export class TrackerService {
     return this.deps.store.getSettings();
   }
 
+  listActiveSessions(): TrackerSessionState[] {
+    return [...this.sessions.values()].map((session) => session.state()).filter((state) => state.status === "active");
+  }
+
   saveSettings(settings: TrackerSettings): void {
     this.deps.store.saveSettings(settings);
   }
@@ -137,6 +141,8 @@ export class TrackerService {
       vodTitle: resume?.vodTitle ?? info.title,
       hits: resume?.hits,
       counts: resume?.counts,
+      sentBytes: resume?.sentBytes,
+      receivedChars: resume?.receivedChars,
       startedAt: resume?.startedAt,
     });
 
@@ -188,6 +194,12 @@ export class TrackerService {
       });
     } catch (err) {
       logger.warn(`[Tracker] Не удалось закрыть статус ${closed.channel}:`, err);
+    }
+
+    try {
+      await this.deps.telegram.unpinMessage(closed.chatId, closed.messageId);
+    } catch (err) {
+      logger.warn(`[Tracker] Не удалось открепить статус ${closed.channel}:`, err);
     }
   }
 }

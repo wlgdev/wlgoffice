@@ -4,6 +4,7 @@ import { PropagationAction } from "@mtcute/dispatcher";
 
 import config from "../../config";
 import { resolveChatAccess } from "../../core/chat-target";
+import { buildSessionsMessage } from "../../tracker/message";
 import type { TrackerService } from "../../tracker/service";
 import {
   describeSettings,
@@ -121,7 +122,10 @@ export async function handleTrackerMessage(
     }
 
     if (command === "list") {
-      await send(toTelegramHtml(`🔎 <b>Трекер ключевых слов</b>\n\n${describeSettings(service.getSettings())}`));
+      const settings = describeSettings(service.getSettings());
+      const sessions = buildSessionsMessage(service.listActiveSessions());
+      const text = sessions ? `${settings}\n\n${sessions}` : settings;
+      await send(toTelegramHtml(`🔎 <b>Трекер ключевых слов</b>\n\n${text}`));
       return undefined;
     }
 
