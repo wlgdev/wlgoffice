@@ -1,131 +1,164 @@
 import { describe, expect, test } from "bun:test";
 
-import { LlmApiError } from "@shevernitskiy/llm";
+import { LiveTranscriber } from "../../src/services/live-transcriber";
 
-import {
-  describeFailure,
-  EmptyTranscriptError,
-  FALLBACK_STT_MODEL,
-  formatRetryAfter,
-  GROQ_MAX_FILE_BYTES,
-  isEmptyTranscript,
-  MAX_TRANSCRIPT_SECONDS,
-  parseRetryAfter,
-  POLISH_MODEL,
-  PRIMARY_STT_MODEL,
-  RateLimitError,
-} from "../../src/services/transcribe";
+const BYTES_PER_SECOND = 16000 * 2;
 
-describe("transcribe service", () => {
-  describe("constants and limits", () => {
-    test("models configured properly", () => {
-      expect(PRIMARY_STT_MODEL).toBe("whisper-large-v3");
-      expect(FALLBACK_STT_MODEL).toBe("whisper-large-v3-turbo");
-      expect(POLISH_MODEL).toBe("gemini-3.5-flash-lite");
-    });
+/** checkDrift приватный и завязан на поля класса, поэтому тесты ставят состояние напрямую. */
+interface Internals {
+  window?: { oldestSec: number; edgeSec: number; fetchedAtMs: number };
+  driftCheckAfterMs: number;
+  offsetSec: number;
+  sentBytes: number;
+  resyncTimesMs: number[];
+  checkDrift(): void;
+  audioPosSec(): number;
+}
 
-    test("Groq free tier limits", () => {
-      expect(GROQ_MAX_FILE_BYTES).toBe(25 * 1024 * 1024);
-      expect(MAX_TRANSCRIPT_SECONDS).toBe(20 * 60);
-      // 20 min * 160 kbps / 8 = 24 MB, fits within 25 MB limit
-      expect((MAX_TRANSCRIPT_SECONDS * 160_000) / 8).toBeLessThan(GROQ_MAX_FILE_BYTES);
-    });
-  });
+interface Setup {
+  /** Позиция аудио (offsetSec), сек. */
+  pos: number;
+  /** Начало и край окна плейлиста на момент опроса, сек. */
+  oldest: number;
+  edge: number;
+  /** Сколько мс назад был получен плейлист (по умолчанию только что). */
+  fetchedAgoMs?: number;
+  /** Сколько мс ещё длится grace-период (по умолчанию уже закончился). */
+  graceLeftMs?: number;
+  /** Уже отправлено аудио, сек (добавляется к позиции). */
+  sentSec?: number;
+  noWindow?: boolean;
+}
 
-  describe("error classes", () => {
-    test("RateLimitError carries retryAfterSec and detail", () => {
-      const err = new RateLimitError(30, "Rate limit reached");
-      expect(err.name).toBe("RateLimitError");
-      expect(err.retryAfterSec).toBe(30);
-      expect(err.detail).toBe("Rate limit reached");
-    });
+function makeTranscriber(s: Setup): Internals {
+  const t = new LiveTranscriber({
+    hlsUrl: "http://localhost/test.m3u8",
+    geminiApiKey: "test",
+  }) as unknown as Internals;
 
-    test("EmptyTranscriptError has standard message", () => {
-      const err = new EmptyTranscriptError();
-      expect(err.name).toBe("EmptyTranscriptError");
-      expect(err.message).toContain("не распознано речи");
-    });
-  });
+  t.offsetSec = s.pos;
+  t.sentBytes = (s.sentSec ?? 0) * BYTES_PER_SECOND;
+  t.window = s.noWindow
+    ? undefined
+    : { oldestSec: s.oldest, edgeSec: s.edge, fetchedAtMs: Date.now() - (s.fetchedAgoMs ?? 0) };
+  t.driftCheckAfterMs = Date.now() + (s.graceLeftMs ?? -1);
+  return t;
+}
 
-  describe("formatRetryAfter", () => {
-    test("formats null as unknown", () => {
-      expect(formatRetryAfter(null)).toBe("неизвестно");
-    });
-
-    test("formats seconds below 90 as seconds", () => {
-      expect(formatRetryAfter(2)).toBe("через 2с");
-      expect(formatRetryAfter(89)).toBe("через 89с");
-    });
-
-    test("formats 90+ seconds as approximate minutes", () => {
-      expect(formatRetryAfter(90)).toBe("через ~2 мин");
-      expect(formatRetryAfter(3600)).toBe("через ~60 мин");
+describe("LiveTranscriber.checkDrift", () => {
+  describe("без окна плейлиста", () => {
+    test("ничего не делает", () => {
+      const t = makeTranscriber({ pos: 100, oldest: 500, edge: 506, noWindow: true });
+      expect(() => t.checkDrift()).not.toThrow();
+      expect(t.audioPosSec()).toBe(100);
     });
   });
 
-  describe("parseRetryAfter", () => {
-    test("parses retry-after from lowercase headers", () => {
-      const err = new LlmApiError("rate limit", 429, { "retry-after": "15" });
-      expect(parseRetryAfter(err)).toBe(15);
+  describe("grace-период", () => {
+    test("отставание игнорируется, позиция не двигается", () => {
+      const t = makeTranscriber({ pos: 100, oldest: 150, edge: 156, graceLeftMs: 10_000 });
+      expect(() => t.checkDrift()).not.toThrow();
+      expect(t.audioPosSec()).toBe(100);
     });
 
-    test("parses Retry-After from capitalized headers", () => {
-      const err = new LlmApiError("rate limit", 429, { "Retry-After": "45" });
-      expect(parseRetryAfter(err)).toBe(45);
+    test("рассинхрон вперёд тоже игнорируется", () => {
+      const t = makeTranscriber({ pos: 300, oldest: 150, edge: 156, graceLeftMs: 10_000 });
+      expect(() => t.checkDrift()).not.toThrow();
     });
 
-    test("parses retry seconds from error message body fallback", () => {
-      const err = new LlmApiError("Rate limit: please try again in 12.5s", 429, {});
-      expect(parseRetryAfter(err)).toBe(12.5);
-    });
-
-    test("returns null when no retry-after info is present", () => {
-      const err = new LlmApiError("Rate limit without timing", 429, {});
-      expect(parseRetryAfter(err)).toBeNull();
+    test("после окончания проверка включается", () => {
+      const t = makeTranscriber({ pos: 100, oldest: 150, edge: 156, graceLeftMs: -1 });
+      t.checkDrift();
+      expect(t.audioPosSec()).toBeCloseTo(148, 1);
     });
   });
 
-  describe("isEmptyTranscript", () => {
-    test("returns true for LlmApiError 200 with empty response", () => {
-      const err = new LlmApiError("empty response from Groq", 200, {});
-      expect(isEmptyTranscript(err)).toBe(true);
+  describe("мягкий перенос при пропуске сегментов", () => {
+    test("отставание в пределах допуска не трогает позицию", () => {
+      const t = makeTranscriber({ pos: 143, oldest: 150, edge: 156 });
+      t.checkDrift();
+      expect(t.audioPosSec()).toBe(143);
     });
 
-    test("returns false for server error status codes", () => {
-      const err = new LlmApiError("server error", 500, {});
-      expect(isEmptyTranscript(err)).toBe(false);
+    test("ровно на границе допуска (8 с) не срабатывает", () => {
+      const t = makeTranscriber({ pos: 142, oldest: 150, edge: 156 });
+      t.checkDrift();
+      expect(t.audioPosSec()).toBe(142);
     });
 
-    test("returns false for regular Error", () => {
-      expect(isEmptyTranscript(new Error("regular error"))).toBe(false);
+    test("за границей допуска переносит позицию на начало окна минус запас 2 с, без ошибки", () => {
+      const t = makeTranscriber({ pos: 100, oldest: 150, edge: 156 });
+      expect(() => t.checkDrift()).not.toThrow();
+      expect(t.audioPosSec()).toBeCloseTo(148, 1);
+    });
+
+    test("учитывает уже отправленное аудио и не трогает sentBytes", () => {
+      const t = makeTranscriber({ pos: 100, sentSec: 10, oldest: 150, edge: 156 });
+      const sentBefore = t.sentBytes;
+      t.checkDrift();
+      expect(t.audioPosSec()).toBeCloseTo(148, 1);
+      expect(t.offsetSec).toBeCloseTo(138, 1);
+      expect(t.sentBytes).toBe(sentBefore);
+    });
+
+    test("сдвигает окно на время, прошедшее с опроса плейлиста", () => {
+      // окно опрошено 30 с назад: сейчас оно начинается на ~130 с
+      const t = makeTranscriber({ pos: 100, oldest: 100, edge: 106, fetchedAgoMs: 30_000 });
+      t.checkDrift();
+      expect(t.audioPosSec()).toBeCloseTo(128, 0);
+    });
+
+    test("повторный вызов после переноса ничего не меняет", () => {
+      const t = makeTranscriber({ pos: 100, oldest: 150, edge: 156 });
+      t.checkDrift();
+      const after = t.audioPosSec();
+      t.checkDrift();
+      expect(t.audioPosSec()).toBeCloseTo(after, 1);
+    });
+
+    test("отставание больше 60 с считается разрывом таймлинии и бросает ошибку", () => {
+      const t = makeTranscriber({ pos: 100, oldest: 200, edge: 206 });
+      expect(() => t.checkDrift()).toThrow("пропуск сегментов");
+      expect(t.audioPosSec()).toBe(100);
     });
   });
 
-  describe("describeFailure", () => {
-    test("describes 2xx LlmApiError as empty model response", () => {
-      const err = new LlmApiError("empty response", 200, {});
-      expect(describeFailure(err)).toBe("пустой ответ модели");
+  describe("серия мягких переносов", () => {
+    test("третий перенос за 2 минуты бросает ошибку и позицию не двигает", () => {
+      const t = makeTranscriber({ pos: 100, oldest: 150, edge: 156 });
+      t.checkDrift();
+      t.offsetSec = 100;
+      t.checkDrift();
+      t.offsetSec = 100;
+      expect(() => t.checkDrift()).toThrow("не успевает за стримом");
+      expect(t.audioPosSec()).toBe(100);
     });
 
-    test("describes non-2xx LlmApiError with HTTP status", () => {
-      const err = new LlmApiError("rate limit", 429, {});
-      expect(describeFailure(err)).toBe("HTTP 429");
+    test("два переноса подряд ещё допустимы", () => {
+      const t = makeTranscriber({ pos: 100, oldest: 150, edge: 156 });
+      t.checkDrift();
+      t.offsetSec = 100;
+      expect(() => t.checkDrift()).not.toThrow();
+      expect(t.resyncTimesMs.length).toBe(2);
     });
 
-    test("describes TimeoutError and AbortError", () => {
-      const timeout = new Error("timeout");
-      timeout.name = "TimeoutError";
-      expect(describeFailure(timeout)).toBe("таймаут запроса");
+    test("старые переносы (за пределами окна 2 минуты) не считаются", () => {
+      const t = makeTranscriber({ pos: 100, oldest: 150, edge: 156 });
+      t.resyncTimesMs = [Date.now() - 200_000, Date.now() - 190_000];
+      expect(() => t.checkDrift()).not.toThrow();
+      expect(t.resyncTimesMs.length).toBe(1);
+    });
+  });
 
-      const abort = new Error("abort");
-      abort.name = "AbortError";
-      expect(describeFailure(abort)).toBe("таймаут запроса");
+  describe("рассинхрон вперёд", () => {
+    test("позиция за краем плейлиста бросает ошибку", () => {
+      const t = makeTranscriber({ pos: 200, oldest: 150, edge: 156 });
+      expect(() => t.checkDrift()).toThrow("рассинхрон таймлинии");
     });
 
-    test("truncates regular error messages to 120 characters", () => {
-      const longMessage = "a".repeat(200);
-      const desc = describeFailure(new Error(longMessage));
-      expect(desc.length).toBe(120);
+    test("позиция чуть впереди края в пределах допуска не бросает", () => {
+      const t = makeTranscriber({ pos: 162, oldest: 150, edge: 156 });
+      expect(() => t.checkDrift()).not.toThrow();
     });
   });
 });

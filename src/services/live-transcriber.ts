@@ -10,13 +10,38 @@ const CHUNK_MS = (CHUNK_BYTES / BYTES_PER_SECOND) * 1000;
 const FLUSH_MS = 3000;
 /** Куски текста, пришедшие в пределах этого окна, считаются одной пачкой. */
 const BATCH_MS = 60;
-const PLAYLIST_TIMEOUT_MS = 5000;
+const PLAYLIST_TIMEOUT_MS = 10000;
 /** С какого сегмента live HLS начинает ffmpeg (отрицательное значение считается от конца). */
 const LIVE_START_INDEX = -3;
 /** Как часто перечитывать плейлист для контроля дрейфа. */
 const WINDOW_POLL_MS = 30000;
 /** Допустимое расхождение таймлинии аудио с окном плейлиста, сек. */
 const DRIFT_TOLERANCE_SEC = 8;
+/**
+ * Сколько после старта pumpAudio не проверять дрейф: ffmpeg поднимается (в логах до ~18 с)
+ * и догоняет край плейлиста, и в это время позиция законно отстаёт от окна.
+ */
+const DRIFT_GRACE_MS = 30000;
+/**
+ * При пропуске сегментов позицию переносим на начало окна плейлиста минус этот запас, сек.
+ * ffmpeg после пропуска продолжает с самого старого сегмента окна; запас покрывает ошибку
+ * экстраполяции окна и задержку обнаружения, чтобы метки не оказались позже реального аудио.
+ */
+const RESYNC_BACK_SEC = 2;
+/**
+ * Если позиция отстала от окна больше, чем на это, то это уже не пропуск нескольких сегментов,
+ * а разрыв таймлинии: мягко не чиним, бросаем ошибку и перезапускаем транскрибер.
+ */
+const MAX_RESYNC_SEC = 60;
+/**
+ * Серия мягких переносов подряд означает не случайный пропуск, а то, что ffmpeg не успевает за
+ * стримом (сеть, CDN): мягко такое не лечится, нужен рестарт ffmpeg и сессии Gemini.
+ * Столько переносов за окно (включая текущий) приводят к ошибке.
+ */
+const RESYNC_STORM_LIMIT = 3;
+const RESYNC_STORM_WINDOW_MS = 120000;
+/** Если от ffmpeg не приходило аудио столько, он считается зависшим: ошибка и рестарт. */
+const NO_AUDIO_TIMEOUT_MS = 30000;
 /** При догоне (после лагов скачивания) отправлять аудио не быстрее этого множителя реального времени. */
 const MAX_CATCHUP_SPEED = 2;
 
@@ -106,6 +131,14 @@ export class LiveTranscriber {
   private timer?: ReturnType<typeof setTimeout>;
   private pollTimer?: ReturnType<typeof setInterval>;
   private window?: StreamWindow;
+  /** Date.now(), раньше которого checkDrift ничего не проверяет (grace-период после старта). */
+  private driftCheckAfterMs = 0;
+  /** Моменты последних мягких переносов (для защиты от серии). */
+  private resyncTimesMs: number[] = [];
+  /** Причина аварийной остановки (ошибка Gemini и т.п.): start() обязан её пробросить для реконнекта. */
+  private failure?: Error;
+  /** Штатное закрытие сессии: окончание приёма в это время не ошибка. */
+  private closing = false;
   private stopped = false;
   private sentBytes = 0;
   private offsetSec = 0;
@@ -155,6 +188,8 @@ export class LiveTranscriber {
       // так что ffmpeg начнёт с того же или более позднего сегмента, чем мы посчитали.
       // Метки получатся не позже реального аудио, и слово окажется впереди ссылки.
       const snapshot = await this.fetchSegments();
+      // Сессия могла закрыться, пока брали плейлист: ffmpeg запускать незачем.
+      if (this.failure) throw this.failure;
 
       const ffmpeg = Bun.spawn(
         [
@@ -194,6 +229,11 @@ export class LiveTranscriber {
 
       await this.pumpAudio(ffmpeg, session);
 
+      // Остановка из-за сбоя (например, закрылась сессия Gemini) не должна выглядеть как штатное
+      // завершение: иначе внешний код не перезапустит транскрибер.
+      if (this.failure) throw this.failure;
+      this.closing = true;
+
       const exitCode = await ffmpeg.exited;
       if (exitCode !== 0 && !this.stopped) {
         throw new Error(`ffmpeg exited with code ${exitCode}`);
@@ -216,6 +256,8 @@ export class LiveTranscriber {
       this.ffmpeg = undefined;
       this.session = undefined;
       this.stopped = false;
+      this.closing = false;
+      this.failure = undefined;
     }
   }
 
@@ -261,16 +303,24 @@ export class LiveTranscriber {
   }
 
   /**
-   * Бросает ошибку, если таймлиния аудио разошлась с живым плейлистом (ffmpeg пропустил сегменты
-   * или в потоке был разрыв). start() завершится ошибкой, и внешний код перезапустит транскрибер
-   * с новым смещением.
+   * Следит за расхождением таймлинии аудио с живым плейлистом.
+   *
+   * - Первые DRIFT_GRACE_MS после старта не проверяется: ffmpeg ещё поднимается и догоняет.
+   * - Если позиция отстала от окна (ffmpeg пропустил сегменты, потому что не успел за коротким
+   *   окном плейлиста), то позиция мягко переносится вперёд на начало окна: ffmpeg после пропуска
+   *   продолжает именно с него. Транскрибер и сессия Gemini при этом не перезапускаются.
+   *   Если отставание больше MAX_RESYNC_SEC (разрыв таймлинии) или переносы идут серией
+   *   (ffmpeg не успевает за стримом), бросается ошибка.
+   * - Если позиция ушла за край плейлиста, таймлиния сломана (сброс счётчика, смена эфира):
+   *   бросается ошибка, start() завершается, и внешний код перезапускает транскрибер
+   *   с новым смещением.
    *
    * Окно плейлиста известно на момент последнего опроса, а живое окно с тех пор ушло вперёд
    * со скоростью реального времени, поэтому края сдвигаются на прошедшее время.
    */
   private checkDrift(): void {
     const win = this.window;
-    if (!win) return;
+    if (!win || Date.now() < this.driftCheckAfterMs) return;
 
     const shiftSec = (Date.now() - win.fetchedAtMs) / 1000;
     const oldest = win.oldestSec + shiftSec;
@@ -278,7 +328,26 @@ export class LiveTranscriber {
     const pos = this.audioPosSec();
 
     if (pos + DRIFT_TOLERANCE_SEC < oldest) {
-      throw new Error(`HLS: пропуск сегментов (позиция ${pos.toFixed(1)}s, окно плейлиста с ${oldest.toFixed(1)}s)`);
+      const jumpSec = oldest - RESYNC_BACK_SEC - pos;
+      if (jumpSec > MAX_RESYNC_SEC) {
+        throw new Error(`HLS: пропуск сегментов (позиция ${pos.toFixed(1)}s, окно плейлиста с ${oldest.toFixed(1)}s)`);
+      }
+
+      const now = Date.now();
+      this.resyncTimesMs = this.resyncTimesMs.filter((t) => now - t < RESYNC_STORM_WINDOW_MS);
+      this.resyncTimesMs.push(now);
+      if (this.resyncTimesMs.length >= RESYNC_STORM_LIMIT) {
+        throw new Error(
+          `HLS: ffmpeg не успевает за стримом (${this.resyncTimesMs.length} пропусков за ${RESYNC_STORM_WINDOW_MS / 1000}с)`,
+        );
+      }
+
+      this.offsetSec += jumpSec;
+      logger.warn(
+        `[LiveTranscriber] HLS: пропуск сегментов, позиция ${pos.toFixed(1)}s -> ${this.audioPosSec().toFixed(1)}s ` +
+          `(+${jumpSec.toFixed(1)}s, окно с ${oldest.toFixed(1)}s)`,
+      );
+      return;
     }
     if (pos - DRIFT_TOLERANCE_SEC > edge) {
       throw new Error(`HLS: рассинхрон таймлинии (позиция ${pos.toFixed(1)}s, край плейлиста ${edge.toFixed(1)}s)`);
@@ -334,11 +403,39 @@ export class LiveTranscriber {
           this.enqueueText(event.text);
         }
       }
+      // Приём закончился сам, а мы ничего не закрывали: сервер закрыл сессию, это сбой.
+      this.fail(new Error("Gemini: сессия закрыта сервером"));
     } catch (err) {
       logger.warn("[LiveTranscriber] gemini receive failed:", err);
-      this.stop();
+      this.fail(err instanceof Error ? err : new Error(String(err)));
     } finally {
       this.flushBatch();
+    }
+  }
+
+  /**
+   * Аварийная остановка: запоминает причину и гасит ffmpeg, а start() потом бросит эту ошибку.
+   * Во время штатной остановки или закрытия ничего не делает.
+   */
+  private fail(err: Error): void {
+    if (this.stopped || this.closing) return;
+    this.failure = err;
+    this.stop();
+  }
+
+  /** Ждёт чтение из ffmpeg не дольше таймаута: зависший ffmpeg (сеть, CDN) не должен подвешивать транскрибер навсегда. */
+  private async readWithTimeout<T>(read: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`ffmpeg: нет аудио ${NO_AUDIO_TIMEOUT_MS / 1000}с`)),
+        NO_AUDIO_TIMEOUT_MS,
+      );
+    });
+    try {
+      return await Promise.race([read, timeout]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -349,12 +446,14 @@ export class LiveTranscriber {
     const reader = ffmpeg.stdout.getReader();
     let carry = new Uint8Array(0);
     const startedAt = Date.now();
+    this.driftCheckAfterMs = startedAt + DRIFT_GRACE_MS;
+    this.resyncTimesMs = [];
     let lastSentAt = 0;
     this.sentBytes = 0;
 
     try {
       while (true) {
-        const { done, value } = await reader.read();
+        const { done, value } = await this.readWithTimeout(reader.read());
         if (done) break;
         let data = value!;
         if (carry.length > 0) {
