@@ -1,4 +1,4 @@
-import { InputMedia, type TelegramClient } from "@mtcute/bun";
+import type { TelegramClient } from "@mtcute/bun";
 import type { Dispatcher, MessageContext } from "@mtcute/dispatcher";
 import { PropagationAction } from "@mtcute/dispatcher";
 
@@ -6,30 +6,30 @@ import config from "../../config";
 import { resolveChatAccess } from "../../core/chat-target";
 import { parseInteropPayload, stripInteropPayload } from "../../core/interop";
 import type { AudioPick, InteropPayload } from "../../core/types";
-import { parseVodMessage, parseVodMode, safeDeleteFile } from "../../core/utils";
+import { formatTwitchTime, parseVodMessage, parseVodMode, safeDeleteFile } from "../../core/utils";
 import logger from "../../logger";
 import { processClip } from "../../pipeline/clip.processor";
 import { processTranscript } from "../../pipeline/transcript.processor";
 import { DurationLimitError, FileSizeLimitError, GroqFileSizeLimitError } from "../../pipeline/types";
+import type { DB } from "../../services/db";
 import { getVodHlsStream, QualityNotFoundError } from "../../services/hls";
 import { EmptyTranscriptError, FALLBACK_STT_MODEL, RateLimitError } from "../../services/transcribe";
 import { ChannelOfflineError, DEFAULT_CHANNEL, resolveLiveVod } from "../../services/twitch";
 import { getVkHlsStream } from "../../services/vk";
-import {
-  buildCaption,
-  buildDeleteKeyboard,
-  buildQualityNotFoundStatus,
-  buildRequesterLine,
-  buildTranscriptCaption,
-  escapeHtml,
-  formatMuteBadge,
-  toTelegramHtml,
-  transcriptBadge,
-} from "../formatters";
+import { buildMediaResultBlock, buildRequesterLine, buildStageLine, escapeHtml, toTelegramHtml } from "../formatters";
 import { validateInterop } from "../interop-guard";
-import { StatusTracker } from "../status-tracker";
+import { MediaJobMessage } from "../media-job";
 import { createTelegramPort } from "../telegram-port";
 import { getMessageThreadId } from "../topic";
+
+const STAGE_FETCH = "получение HLS";
+const STAGE_FETCH_AUDIO = "получение аудио";
+const STAGE_REMUX_MP4 = "ремуксинг MP4";
+const STAGE_REMUX_M4A = "ремуксинг M4A";
+const STAGE_UPLOAD = "загрузка в Telegram";
+const STAGE_STT = "распознавание речи";
+const STAGE_POLISH = "причесывание текста";
+const STAGE_RANGE = "разбор интервала";
 
 function isChannelChat(msg: MessageContext): boolean {
   return "chatType" in msg.chat && msg.chat.chatType === "channel";
@@ -47,9 +47,27 @@ function answerText(
   return msg.replyText(text, { threadId });
 }
 
-export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
+function describeItemError(err: unknown): string {
+  if (err instanceof RateLimitError) {
+    return err.detail;
+  }
+  const message = (err as { message?: unknown })?.message;
+  const text = typeof message === "string" && message ? message : String(err);
+  return text.slice(0, 200);
+}
+
+function buildVodLink(vodUrl: string, startSec: number, isVk: boolean): string {
+  if (!Number.isFinite(startSec)) {
+    return vodUrl;
+  }
+  const separator = vodUrl.includes("?") ? "&" : "?";
+  const stamp = isVk ? String(Math.max(0, Math.floor(startSec))) : formatTwitchTime(startSec);
+  return `${vodUrl}${separator}t=${stamp}`;
+}
+
+export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient, db: DB): void {
   dp.onNewMessage(async (msg) => {
-    let tracker: StatusTracker | undefined;
+    let job: MediaJobMessage | undefined;
     let interop: InteropPayload | null = null;
     let targetChatId: number | string = msg.chat.id;
     let targetThreadId: number | undefined;
@@ -192,14 +210,6 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
           ? requestedQualities
           : undefined;
 
-      const qualityLine = isTranscript
-        ? `🎙 Режим: <b>транскрипт речи</b> (Whisper Large V3 → Gemini Flash Lite)\n`
-        : isAudio
-          ? `🎵 Режим: <b>только звук (AAC)</b>${requestedQualities.length > 0 ? ` (источник: ${requestedQualities.join(", ")})` : ""}\n`
-          : requestedQualities.length > 0
-            ? `🎯 Качество: <b>${requestedQualities.join(", ")}</b>\n`
-            : `🎯 Качество: <b>максимальное</b>\n`;
-
       const fetchStream = (start: number, end: number) =>
         isVk
           ? getVkHlsStream({
@@ -221,33 +231,51 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
               audio: audioPick,
             });
 
-      const sourceLine = isVk
-        ? `🌐 Источник: <b>VK Видео</b> | Видео: <code>${vodId}</code>\n`
-        : `📺 Канал: <b>${channelName}</b> | VOD: <code>${vodId}</code>\n`;
+      const vodLabel = `VOD`;
+      const notes: string[] = [];
+      if (interop) {
+        notes.push(buildRequesterLine(interop));
+      }
+      if (requestedQualities.length > 0) {
+        notes.push(`› 🎯 Качество: <b>${requestedQualities.join(", ")}</b>`);
+      } else if (!isTranscript) {
+        notes.push("› 🎯 Качество: <b>максимальное</b>");
+      }
 
-      const requesterLine = interop ? `${buildRequesterLine(interop)}\n` : "";
+      const mediaJob = new MediaJobMessage(
+        createTelegramPort(tg),
+        targetChatId,
+        undefined,
+        {
+          title: isTranscript ? "🎙 Транскрипт" : isAudio ? "🎵 Аудио" : totalRanges > 1 ? "🎬 Клипы" : "🎬 Клип",
+          source: isVk ? `› 🌐 <a href="${vodUrl}">${vodId}</a>` : `› 📺 <a href="${vodUrl}">${vodId}</a>`,
+          notes,
+          items: parsedVod.ranges.map((range, index) => ({
+            id: index + 1,
+            range: `${range.rawStart}–${range.rawEnd}`,
+            vodUrl: buildVodLink(vodUrl, range.startSeconds, isVk),
+            vodLabel,
+            stage: null,
+            block: null,
+            media: null,
+          })),
+        },
+        db,
+        targetThreadId,
+        interop || isChannelChat(msg) ? undefined : msg.id,
+      );
 
-      const initialText =
-        `📥 <b>Запрос принят!</b>\n` +
-        requesterLine +
-        sourceLine +
-        qualityLine +
-        `⏱ ${isTranscript ? "Фрагментов" : "Клипов"} в очереди: <b>${totalRanges}</b>\n\n` +
-        parsedVod.ranges
-          .map((r, i) => `⏳ [${i + 1}/${totalRanges}] <code>${r.rawStart} - ${r.rawEnd}</code> — ожидание...`)
-          .join("\n");
-
-      let statusMsg;
-      try {
-        statusMsg = await sendStatus(toTelegramHtml(initialText));
-      } catch (e) {
-        if (String(e).includes("CHAT_ADMIN_REQUIRED")) {
+      job = mediaJob;
+      const createCode = await mediaJob.flush();
+      if (createCode) {
+        const detail = mediaJob.error ?? "неизвестная ошибка";
+        if (detail.includes("CHAT_ADMIN_REQUIRED")) {
           logger.error(
             "❌ Нет прав на отправку в этот чат: дай боту админку с правом «Публикация сообщений» " +
               "(и проверь, что в канал добавлен именно этот бот, а не другой с похожим именем).",
           );
         }
-        logger.error("Не удалось отправить стартовое сообщение в чат:", e);
+        logger.error("Не удалось отправить стартовое сообщение в чат:", detail);
         if (interop) {
           try {
             await answerText(
@@ -260,58 +288,48 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
         return PropagationAction.Continue;
       }
 
-      const initialLines = parsedVod.ranges.map((r) => `<code>${r.rawStart} - ${r.rawEnd}</code>`);
-      tracker = new StatusTracker(
-        createTelegramPort(tg),
-        statusMsg.chat.id,
-        statusMsg.id,
-        vodId,
-        initialLines,
-        interop ? buildRequesterLine(interop) : undefined,
-      );
+      const stageLine = (icon: string, itemId: number, range: string, text: string) =>
+        buildStageLine({ icon, index: itemId, total: totalRanges, range, text });
 
       let successCount = 0;
-      let totalDurationSec = 0;
-      let totalSizeMB = 0;
-      let totalMutedSegments = 0;
-      let totalUnmutedSegments = 0;
-      let totalFailedUnmutedSegments = 0;
-      let transcriptTurboCount = 0;
-      let transcriptPolishedCount = 0;
       let preferTurbo = false;
 
       for (let i = 0; i < parsedVod.ranges.length; i++) {
         const range = parsedVod.ranges[i]!;
-        const currentIndex = i + 1;
-        const rawRange = `${range.rawStart} - ${range.rawEnd}`;
-        const tag = `[${currentIndex}/${totalRanges}] <code>${rawRange}</code>`;
+        const itemId = i + 1;
+        const rangeLabel = `${range.rawStart}–${range.rawEnd}`;
+        const startedAt = Date.now();
 
         if (
           !Number.isFinite(range.startSeconds) ||
           !Number.isFinite(range.endSeconds) ||
           range.startSeconds >= range.endSeconds
         ) {
-          tracker.setLine(i, `❌ ${tag} — некорректный интервал`);
+          mediaJob.fail(itemId, { stage: STAGE_RANGE, detail: "некорректный интервал", elapsedSec: 0 });
           continue;
         }
 
         if (isTranscript) {
           let txtPath: string | undefined;
+          let stage = STAGE_FETCH_AUDIO;
           try {
-            tracker.setLine(i, `🔄 ${tag} — получение аудио...`);
+            mediaJob.setStage(itemId, stageLine("🔄", itemId, rangeLabel, `${STAGE_FETCH_AUDIO}…`));
 
             const result = await processTranscript({
               range,
               vodId,
               fetchStream,
               preferTurbo,
-              onProgress: (stage) => {
-                if (stage === "remux") {
-                  tracker!.setLine(i, `⚙️ ${tag} — ремуксинг M4A...`);
-                } else if (stage === "stt") {
-                  tracker!.setLine(i, `📝 ${tag} — распознавание речи (${preferTurbo ? "Turbo" : "V3"})...`);
-                } else if (stage === "polish") {
-                  tracker!.setLine(i, `✨ ${tag} — причесывание текста...`);
+              onProgress: (progress) => {
+                if (progress === "remux") {
+                  stage = STAGE_REMUX_M4A;
+                  mediaJob.setStage(itemId, stageLine("⚙️", itemId, rangeLabel, `${STAGE_REMUX_M4A}…`));
+                } else if (progress === "stt") {
+                  stage = STAGE_STT;
+                  mediaJob.setStage(itemId, stageLine("📝", itemId, rangeLabel, `${STAGE_STT}…`));
+                } else if (progress === "polish") {
+                  stage = STAGE_POLISH;
+                  mediaJob.setStage(itemId, stageLine("✨", itemId, rangeLabel, `${STAGE_POLISH}…`));
                 }
               },
             });
@@ -319,67 +337,73 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
             txtPath = result.txtPath;
 
             if (result.stt.model === FALLBACK_STT_MODEL) {
-              transcriptTurboCount++;
               preferTurbo = true;
             }
-            if (result.polish.polished) {
-              transcriptPolishedCount++;
-            }
 
-            tracker.setLine(i, `⬆️ ${tag} — отправка (${result.polish.text.length} символов)...`);
+            stage = STAGE_UPLOAD;
+            mediaJob.setStage(itemId, stageLine("⬆️", itemId, rangeLabel, `${STAGE_UPLOAD}…`));
 
-            try {
-              await tg.sendTyping(targetChatId, "upload_document", { threadId: targetThreadId });
-            } catch {}
-
-            await tg.sendMedia(
-              targetChatId,
-              InputMedia.document(`file:${txtPath}`, {
-                caption: toTelegramHtml(
-                  buildTranscriptCaption({
-                    range,
-                    stt: result.stt,
-                    polish: result.polish,
-                    durationSec: Math.round(result.remux.duration),
-                    vodId,
-                    vodUrl,
-                  }),
-                ),
-              }),
-              {
-                replyMarkup: buildDeleteKeyboard(),
-                replyTo: interop || isChannelChat(msg) ? undefined : msg.id,
-                threadId: targetThreadId,
+            const uploaded = await mediaJob.complete(itemId, {
+              media: {
+                type: "document",
+                fileId: null,
+                localPath: txtPath,
+                width: 0,
+                height: 0,
+                duration: Math.round(result.remux.duration),
               },
-            );
+              block: buildMediaResultBlock({
+                mode: "transcript",
+                itemId,
+                range: rangeLabel,
+                vodUrl: buildVodLink(vodUrl, range.startSeconds, isVk),
+                vodLabel,
+                durationSec: result.remux.duration,
+                sizeMB: result.remux.sizeMB,
+                elapsedSec: (Date.now() - startedAt) / 1000,
+                sttModel: result.stt.model,
+                polished: result.polish.polished,
+                chars: result.polish.text.length,
+              }),
+              stage: STAGE_UPLOAD,
+              elapsedSec: (Date.now() - startedAt) / 1000,
+            });
 
-            totalDurationSec += result.remux.duration;
-            tracker.setLine(
-              i,
-              `✅ ${tag} (${Math.round(result.remux.duration)}с · ${transcriptBadge(result.stt, result.polish)})`,
-            );
-            successCount++;
+            if (uploaded) {
+              successCount++;
+            }
           } catch (e: any) {
             if (e instanceof RateLimitError) {
-              logger.warn(`[Groq Limit ${currentIndex}/${totalRanges}]:`, e.detail);
-              tracker.setLine(i, `❌ ${tag} — ${e.detail}`);
+              logger.warn(`[Groq Limit ${itemId}/${totalRanges}]:`, e.detail);
+              mediaJob.fail(itemId, {
+                stage,
+                detail: e.detail,
+                elapsedSec: (Date.now() - startedAt) / 1000,
+              });
               for (let j = i + 1; j < parsedVod.ranges.length; j++) {
-                const pending = parsedVod.ranges[j]!;
-                tracker.setLine(
-                  j,
-                  `⏭ [${j + 1}/${totalRanges}] <code>${pending.rawStart} - ${pending.rawEnd}</code> — пропущен (лимит Groq)`,
-                );
+                mediaJob.skip(j + 1, "лимит Groq");
               }
               break;
             }
             if (e instanceof EmptyTranscriptError) {
-              tracker.setLine(i, `⚠️ ${tag} — в этом фрагменте не распознано речи`);
+              mediaJob.fail(itemId, {
+                stage,
+                detail: "в этом фрагменте не распознано речи",
+                elapsedSec: (Date.now() - startedAt) / 1000,
+              });
             } else if (e instanceof DurationLimitError || e instanceof GroqFileSizeLimitError) {
-              tracker.setLine(i, `❌ ${tag} — ${e.message}`);
+              mediaJob.fail(itemId, {
+                stage,
+                detail: e.message,
+                elapsedSec: (Date.now() - startedAt) / 1000,
+              });
             } else {
-              logger.error(`[Error Transcript ${currentIndex}/${totalRanges}]:`, e);
-              const errDescription = e?.message ? e.message.slice(0, 200) : String(e);
-              tracker.setLine(i, `❌ ${tag} — ошибка: ${errDescription}`);
+              logger.error(`[Error Transcript ${itemId}/${totalRanges}]:`, e);
+              mediaJob.fail(itemId, {
+                stage,
+                detail: describeItemError(e),
+                elapsedSec: (Date.now() - startedAt) / 1000,
+              });
             }
           } finally {
             if (txtPath) {
@@ -390,92 +414,83 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
         }
 
         let outPath: string | undefined;
+        let stage = STAGE_FETCH;
         try {
-          tracker.setLine(i, `🔄 ${tag} — получение HLS...`);
+          mediaJob.setStage(itemId, stageLine("🔄", itemId, rangeLabel, `${STAGE_FETCH}…`));
 
           const result = await processClip({
             range,
             vodId,
             isAudio,
             fetchStream,
-            onProgress: (stage) => {
-              if (stage === "remux") {
-                tracker!.setLine(i, `⚙️ ${tag} — ремуксинг ${isAudio ? "M4A" : "MP4"}...`);
+            onProgress: (progress) => {
+              if (progress === "remux") {
+                stage = isAudio ? STAGE_REMUX_M4A : STAGE_REMUX_MP4;
+                mediaJob.setStage(itemId, stageLine("⚙️", itemId, rangeLabel, `${stage}…`));
               }
             },
           });
 
           outPath = result.outPath;
 
-          tracker.setLine(i, `⬆️ ${tag} — загрузка в Telegram (${result.remux.sizeMB} MB)...`);
+          stage = STAGE_UPLOAD;
+          mediaJob.setStage(itemId, stageLine("⬆️", itemId, rangeLabel, `${STAGE_UPLOAD}…`));
 
-          try {
-            await tg.sendTyping(targetChatId, isAudio ? "upload_voice" : "upload_video", {
-              threadId: targetThreadId,
-            });
-          } catch {}
-
-          const caption = buildCaption({
-            range,
-            hls: result.hls,
-            muteStats: result.muteStats,
-            remux: result.remux,
-            vodId,
-            vodUrl,
-            index: currentIndex,
-            total: totalRanges,
-            mode,
-            interop,
+          const uploaded = await mediaJob.complete(itemId, {
+            media: {
+              type: isAudio ? "audio" : "video",
+              fileId: null,
+              localPath: outPath,
+              width: result.hls.variant.width,
+              height: result.hls.variant.height,
+              duration: Math.round(result.remux.duration),
+            },
+            block: buildMediaResultBlock({
+              mode: isAudio ? "audio" : "video",
+              itemId,
+              range: rangeLabel,
+              vodUrl: buildVodLink(vodUrl, range.startSeconds, isVk),
+              vodLabel,
+              durationSec: result.remux.duration,
+              sizeMB: result.remux.sizeMB,
+              elapsedSec: (Date.now() - startedAt) / 1000,
+              quality: result.hls.variant.quality,
+              bitrateKbps: result.remux.bitrateKbps,
+              muteStats: result.muteStats,
+            }),
+            stage: STAGE_UPLOAD,
+            elapsedSec: (Date.now() - startedAt) / 1000,
           });
 
-          await tg.sendMedia(
-            targetChatId,
-            isAudio
-              ? InputMedia.audio(`file:${outPath}`, {
-                  caption: toTelegramHtml(caption),
-                  duration: Math.round(result.remux.duration),
-                })
-              : InputMedia.video(`file:${outPath}`, {
-                  caption: toTelegramHtml(caption),
-                  width: result.hls.variant.width,
-                  height: result.hls.variant.height,
-                  supportsStreaming: true,
-                }),
-            {
-              replyMarkup: buildDeleteKeyboard(),
-              replyTo: interop || isChannelChat(msg) ? undefined : msg.id,
-              threadId: targetThreadId,
-            },
-          );
-
-          const muteBadge = formatMuteBadge(result.muteStats);
-          tracker.setLine(i, `✅ ${tag} (${result.remux.duration}с · ${result.remux.sizeMB} MB · ${muteBadge})`);
-
-          successCount++;
-          totalDurationSec += result.remux.duration;
-          totalSizeMB += result.remux.sizeMB;
-          totalMutedSegments += result.muteStats.mutedFound;
-          totalUnmutedSegments += result.muteStats.unmutedSuccess;
-          totalFailedUnmutedSegments += result.muteStats.remainedMuted;
+          if (uploaded) {
+            successCount++;
+          }
         } catch (e: any) {
           if (e instanceof QualityNotFoundError) {
-            logger.warn(`[Quality ${currentIndex}/${totalRanges}]:`, e.message);
-            tracker.setLine(i, buildQualityNotFoundStatus(currentIndex, totalRanges, rawRange, e));
+            logger.warn(`[Quality ${itemId}/${totalRanges}]:`, e.message);
+            mediaJob.fail(itemId, {
+              stage,
+              detail: e.message,
+              elapsedSec: (Date.now() - startedAt) / 1000,
+            });
             for (let j = i + 1; j < parsedVod.ranges.length; j++) {
-              const pending = parsedVod.ranges[j]!;
-              tracker.setLine(
-                j,
-                `⏭ [${j + 1}/${totalRanges}] <code>${pending.rawStart} - ${pending.rawEnd}</code> — пропущен (качество не найдено)`,
-              );
+              mediaJob.skip(j + 1, "качество не найдено");
             }
             break;
           }
           if (e instanceof DurationLimitError || e instanceof FileSizeLimitError) {
-            tracker.setLine(i, `❌ ${tag} — ${e.message}`);
+            mediaJob.fail(itemId, {
+              stage,
+              detail: e.message,
+              elapsedSec: (Date.now() - startedAt) / 1000,
+            });
           } else {
-            logger.error(`[Error Clip ${currentIndex}/${totalRanges}]:`, e);
-            const errDescription = e?.message ? e.message.slice(0, 200) : String(e);
-            tracker.setLine(i, `❌ ${tag} — ошибка: ${errDescription}`);
+            logger.error(`[Error Clip ${itemId}/${totalRanges}]:`, e);
+            mediaJob.fail(itemId, {
+              stage,
+              detail: describeItemError(e),
+              elapsedSec: (Date.now() - startedAt) / 1000,
+            });
           }
         } finally {
           if (outPath) {
@@ -484,59 +499,29 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
         }
       }
 
-      if (successCount === totalRanges) {
-        await tracker.delete();
-        if (interop) {
-          await answerText(
-            tg,
-            msg,
-            toTelegramHtml(`✅ <b>Готово:</b> ${successCount} из ${totalRanges} в чат <code>${targetChatId}</code>.`),
-          );
-        }
-        return PropagationAction.Continue;
-      }
-
-      let finalHeader = `⚠️ <b>Обработка завершена</b> (Успешно: ${successCount} из ${totalRanges})`;
-
-      if (successCount > 0) {
-        if (isTranscript) {
-          finalHeader += `\n🎙 <b>Итог:</b> ${Math.round(totalDurationSec)}с аудио · ${successCount} расшифровок`;
-          finalHeader += `\n✨ <b>Причесано:</b> ${transcriptPolishedCount} из ${successCount}`;
-          if (transcriptTurboCount > 0) {
-            finalHeader += `\n⚠️ <b>Turbo-фолбэк:</b> ${transcriptTurboCount} (лимит Whisper V3 исчерпан)`;
-          }
-        } else {
-          finalHeader += `\n📊 <b>Итог:</b> ${totalDurationSec}с видео · ${totalSizeMB.toFixed(2)} MB`;
-
-          if (totalMutedSegments > 0) {
-            const percent = Math.round((totalUnmutedSegments / totalMutedSegments) * 100);
-            const icon = totalFailedUnmutedSegments === 0 ? "✅" : "⚠️";
-            finalHeader += `\n🔊 <b>Восстановление звука:</b> ${totalUnmutedSegments}/${totalMutedSegments} сегментов (${percent}%) ${icon}`;
-          } else {
-            finalHeader += `\n🔊 <b>Звук:</b> замьюченных сегментов не обнаружено ✅`;
-          }
-        }
-      }
-
-      await tracker.flush(finalHeader);
+      await mediaJob.finish();
 
       if (interop) {
         await answerText(
           tg,
           msg,
           toTelegramHtml(
-            `⚠️ <b>Готово частично:</b> ${successCount} из ${totalRanges} в чат <code>${targetChatId}</code>. Подробности — в статусе.`,
+            successCount === totalRanges
+              ? `✅ <b>Готово:</b> ${successCount} из ${totalRanges} в чат ${targetChatId}.`
+              : `⚠️ <b>Готово частично:</b> ${successCount} из ${totalRanges} в чат ${targetChatId}. ` +
+                  "Подробности — в сообщении с результатами.",
           ),
         );
       }
     } catch (fatalError: any) {
       logger.error("💥 [Fatal Handler Error]:", fatalError);
-      const fatalText = `❌ <b>Критическая ошибка:</b> <code>${fatalError?.message || fatalError}</code>`;
-      if (tracker) {
-        await tracker.recordFatal(fatalText);
+      const fatalText = `💥 Критическая ошибка: ${fatalError?.message || fatalError}`;
+      if (job) {
+        job.abort(fatalText);
+        await job.finish();
       } else {
         try {
-          await answerText(tg, msg, toTelegramHtml(fatalText));
+          await answerText(tg, msg, toTelegramHtml(`❌ <b>${escapeHtml(fatalText)}</b>`));
         } catch {}
       }
 
@@ -546,7 +531,7 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient): void {
             tg,
             msg,
             toTelegramHtml(
-              `💥 <b>Обработка прервана.</b> Подробности — в статусе в чате <code>${targetChatId}</code>.`,
+              `💥 <b>Обработка прервана.</b> Подробности — в сообщении с результатами в чате <code>${targetChatId}</code>.`,
             ),
           );
         } catch {}

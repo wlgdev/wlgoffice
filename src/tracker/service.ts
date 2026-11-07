@@ -189,9 +189,7 @@ export class TrackerService {
     }
 
     try {
-      await this.deps.telegram.editMessage(closed.chatId, closed.messageId, buildTrackerMessage(closed), {
-        disableWebPreview: true,
-      });
+      await this.editStatus(closed);
     } catch (err) {
       logger.warn(`[Tracker] Не удалось закрыть статус ${closed.channel}:`, err);
     }
@@ -201,5 +199,19 @@ export class TrackerService {
     } catch (err) {
       logger.warn(`[Tracker] Не удалось открепить статус ${closed.channel}:`, err);
     }
+  }
+
+  private async editStatus(state: TrackerSessionState): Promise<void> {
+    try {
+      await this.deps.telegram.editRich(state.chatId, state.messageId!, buildTrackerMessage(state), {
+        disableWebPreview: true,
+      });
+      return;
+    } catch (err) {
+      logger.warn("[Tracker] Rich-правка не удалась, пробую обычный текст:", err);
+    }
+    await this.deps.telegram.editMessage(state.chatId, state.messageId!, buildTrackerMessage(state, false), {
+      disableWebPreview: true,
+    });
   }
 }

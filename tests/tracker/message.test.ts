@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { formatTwitchTime } from "../../src/core/utils";
 import {
   buildSessionsMessage,
   buildTrackerMessage,
@@ -7,7 +8,6 @@ import {
   formatCharCount,
   formatDate,
   formatTimestamp,
-  formatTwitchTime,
 } from "../../src/tracker/message";
 import type { TrackerSessionState } from "../../src/tracker/types";
 
@@ -42,7 +42,23 @@ describe("tracker message", () => {
   test("шапка: заголовок, дата с каналом, тайтл и ссылка на VOD", () => {
     const text = buildTrackerMessage(state());
 
-    expect(text).toContain("🔎 <b>Трекер ключевых слов</b>");
+    expect(text).toContain("<h3>🔎 Трекер ключевых слов</h3>");
+  });
+
+  test("rich-разметка: заголовок, абзац и список", () => {
+    const text = buildTrackerMessage(state({ hits: [{ alias: "ggsel", text: "ggsel", timeSec: 60 }] }));
+
+    expect(text).toContain("<h3>");
+    expect(text).toContain("<p>");
+    expect(text).toContain("<ul>");
+    expect(text).toContain("<li>");
+    expect(text).toContain("<br><br>");
+  });
+
+  test("без совпадений лишнего отступа нет", () => {
+    const text = buildTrackerMessage(state());
+
+    expect(text).not.toContain("<br><br>");
   });
 
   test("HTML в названии экранируется", () => {
@@ -70,8 +86,8 @@ describe("tracker message", () => {
     expect(text).toContain('<a href="https://www.twitch.tv/videos/vod-1?t=2h20m30s">2:20:30</a>');
     expect(text).toContain('<a href="https://www.twitch.tv/videos/vod-1?t=2h43m0s">2:43:00</a>');
     expect(text).toContain('<a href="https://www.twitch.tv/videos/vod-1?t=0h10m5s">0:10:05</a>');
-    expect(text).toContain("<b>ggsel:</b>");
-    expect(text).toContain("<b>gg:</b>");
+    expect(text).toContain("<b>ggsel</b>:");
+    expect(text).toContain("<b>gg</b>:");
   });
 
   test("без VOD ссылки на таймстемпы не ведут, строка VOD отсутствует", () => {
@@ -118,17 +134,31 @@ describe("tracker message", () => {
   });
 
   test("лишние таймстемпы обрезаются с пометкой", () => {
-    const hits = Array.from({ length: 150 }, (_, index) => ({
+    const hits = Array.from({ length: 600 }, (_, index) => ({
       alias: "ggsel",
       text: "ggsel",
       timeSec: index * 60,
     }));
 
-    const text = buildTrackerMessage(state({ hits, counts: { ggsel: 150 } }));
+    const text = buildTrackerMessage(state({ hits, counts: { ggsel: 600 } }));
+
+    expect(text.length).toBeLessThanOrEqual(32000);
+    expect(text).toContain("…ещё");
+    expect(text.match(/<a href="https:\/\/www\.twitch\.tv\/videos\/vod-1\?t=/g)!.length).toBeLessThanOrEqual(500);
+  });
+
+  test("обычный текст укладывается в лимит Telegram (4096)", () => {
+    const hits = Array.from({ length: 600 }, (_, index) => ({
+      alias: "ggsel",
+      text: "ggsel",
+      timeSec: index * 60,
+    }));
+
+    const text = buildTrackerMessage(state({ hits, counts: { ggsel: 600 } }), false);
 
     expect(text.length).toBeLessThanOrEqual(4096);
     expect(text).toContain("…ещё");
-    expect(text.match(/<a href="https:\/\/www\.twitch\.tv\/videos\/vod-1\?t=/g)!.length).toBeLessThanOrEqual(90);
+    expect(text).not.toContain("<h3>");
   });
 
   test("формат объёма данных", () => {

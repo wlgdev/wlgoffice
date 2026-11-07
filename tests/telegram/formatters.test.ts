@@ -1,25 +1,30 @@
 import { describe, expect, test } from "bun:test";
 
-import type { InteropPayload } from "../../src/core/types";
-import type { FfmpegRunResult } from "../../src/services/ffmpeg";
-import { type HlsStreamResult, type MuteStats, QualityNotFoundError } from "../../src/services/hls";
-import { FALLBACK_STT_MODEL, PRIMARY_STT_MODEL } from "../../src/services/transcribe";
+import type { InteropPayload, MuteStats } from "../../src/core/types";
 import {
-  buildCaption,
-  buildQualityNotFoundStatus,
+  buildDeleteMediaData,
+  buildMediaErrorBlock,
+  buildMediaResultBlock,
+  buildMediaSkippedBlock,
   buildRequesterLine,
-  buildStatusMessage,
-  buildTranscriptCaption,
+  buildStageLine,
   escapeHtml,
-  formatMuteBadge,
+  formatDuration,
+  formatMuteLine,
+  parseDeleteMediaData,
+  plural,
   toTelegramHtml,
-  transcriptBadge,
 } from "../../src/telegram/formatters";
+import { PRIMARY_STT_MODEL } from "../../src/services/transcribe";
+
+const AMP = String.fromCharCode(38);
 
 describe("telegram formatters", () => {
   describe("escapeHtml and toTelegramHtml", () => {
     test("escapes HTML special characters", () => {
-      expect(escapeHtml("<test>&\"'</test>")).toBe("&lt;test&gt;&amp;\"'&lt;/test&gt;");
+      expect(escapeHtml("<test>&\"'</test>")).toBe(
+        `${AMP}lt;test${AMP}gt;${AMP}amp;"'${AMP}lt;/test${AMP}gt;`,
+      );
     });
 
     test("converts newlines to <br>", () => {
@@ -59,198 +64,164 @@ describe("telegram formatters", () => {
     });
   });
 
-  describe("formatMuteBadge", () => {
-    test("clean audio when no muted segments", () => {
-      expect(formatMuteBadge({ totalSegments: 10, mutedFound: 0, unmutedSuccess: 0, remainedMuted: 0 })).toBe(
-        "🔊 чистый звук",
-      );
+  describe("formatDuration", () => {
+    test("short durations in seconds", () => {
+      expect(formatDuration(13)).toBe("13с");
+      expect(formatDuration(13.6)).toBe("14с");
+    });
+
+    test("long durations in minutes", () => {
+      expect(formatDuration(795)).toBe("13:15");
+      expect(formatDuration(60)).toBe("1:00");
+    });
+  });
+
+  describe("plural", () => {
+    test("picks the right form", () => {
+      expect(plural(1, "символ", "символа", "символов")).toBe("символ");
+      expect(plural(4, "символ", "символа", "символов")).toBe("символа");
+      expect(plural(11, "символ", "символа", "символов")).toBe("символов");
+      expect(plural(6004, "символ", "символа", "символов")).toBe("символа");
+    });
+  });
+
+  describe("formatMuteLine", () => {
+    const clean: MuteStats = { totalSegments: 10, mutedFound: 0, unmutedSuccess: 0, remainedMuted: 0 };
+
+    test("clean audio", () => {
+      expect(formatMuteLine(clean)).toBe("🔊 Звук: чистый ✓");
     });
 
     test("all muted segments unmuted successfully", () => {
-      expect(formatMuteBadge({ totalSegments: 10, mutedFound: 3, unmutedSuccess: 3, remainedMuted: 0 })).toBe(
-        "🔊 3/3 размьючено ✓",
-      );
+      expect(
+        formatMuteLine({ totalSegments: 10, mutedFound: 3, unmutedSuccess: 3, remainedMuted: 0 }),
+      ).toBe("🔊 Звук: размьючено 3/3 ✓");
     });
 
-    test("partially unmuted segments warning", () => {
-      expect(formatMuteBadge({ totalSegments: 10, mutedFound: 5, unmutedSuccess: 3, remainedMuted: 2 })).toBe(
-        "⚠️ 3/5 размьючено (2 без звука)",
-      );
+    test("partially muted segments warning", () => {
+      expect(
+        formatMuteLine({ totalSegments: 10, mutedFound: 5, unmutedSuccess: 3, remainedMuted: 2 }),
+      ).toBe("⚠️ Звук: размьючено 3/5 (2 без звука)");
     });
   });
 
-  describe("buildCaption", () => {
-    const fakeRemux: FfmpegRunResult = {
-      outPath: "tmp/test.mp4",
-      sizeBytes: 15500000,
-      sizeMB: 15.5,
-      duration: 60,
-      trimStart: 0,
-      bitrateKbps: 2000,
-      elapsedMs: 3500,
-    };
-
-    const fakeHls = {
-      variant: {
-        quality: "1080p60",
-        width: 1920,
-        height: 1080,
-        framerate: 60,
-      },
-    } as unknown as HlsStreamResult;
-
-    test("single video clip caption without index", () => {
-      const caption = buildCaption({
-        range: { rawStart: "10:00", rawEnd: "11:00" },
-        hls: fakeHls,
-        muteStats: { totalSegments: 10, mutedFound: 0, unmutedSuccess: 0, remainedMuted: 0 },
-        remux: fakeRemux,
-        vodId: "123456",
-        vodUrl: "https://twitch.tv/videos/123456",
-        index: 1,
-        total: 1,
-        mode: "video",
-      });
-
-      expect(caption).toContain("🎬 <b>Клип [10:00 - 11:00]</b>");
-      expect(caption).toContain("1080p60 (1920x1080 @ 60fps)");
-      expect(caption).toContain("15.5 MB");
-      expect(caption).toContain("чистый (без мьютов) ✅");
-      expect(caption).toContain("https://twitch.tv/videos/123456");
-      expect(caption).not.toContain("1/1");
+  describe("delete callback data", () => {
+    test("builds and parses item id", () => {
+      expect(buildDeleteMediaData(3)).toBe("del:media:3");
+      expect(parseDeleteMediaData("del:media:3")).toBe(3);
     });
 
-    test("multi clip caption shows index/total", () => {
-      const caption = buildCaption({
-        range: { rawStart: "10:00", rawEnd: "11:00" },
-        hls: fakeHls,
-        muteStats: { totalSegments: 10, mutedFound: 2, unmutedSuccess: 2, remainedMuted: 0 },
-        remux: fakeRemux,
-        vodId: "123456",
-        vodUrl: "https://twitch.tv/videos/123456",
+    test("ignores unrelated data", () => {
+      expect(parseDeleteMediaData("del:media")).toBeNull();
+      expect(parseDeleteMediaData("del:media:abc")).toBeNull();
+      expect(parseDeleteMediaData("other")).toBeNull();
+    });
+  });
+
+  describe("buildStageLine", () => {
+    test("renders progress line with plain range", () => {
+      const line = buildStageLine({
+        icon: "🔄",
         index: 2,
         total: 3,
+        range: "07:12:04–07:12:17",
+        text: "получение HLS…",
+      });
+      expect(line).toContain("🔄 [2/3]");
+      expect(line).toContain("07:12:04–07:12:17");
+      expect(line).not.toContain("<code>");
+      expect(line).toContain("получение HLS…");
+    });
+  });
+
+  describe("buildMediaResultBlock", () => {
+    const base = {
+      itemId: 1,
+      range: "25:46:09–25:46:21",
+      vodUrl: "https://www.twitch.tv/videos/1?t=25h46m9s",
+      vodLabel: "VOD 1",
+    };
+
+    test("clip block contains media meta, sound and timing", () => {
+      const block = buildMediaResultBlock({
+        ...base,
         mode: "video",
+        durationSec: 13,
+        sizeMB: 2.07,
+        elapsedSec: 2,
+        quality: "480p30",
+        muteStats: { totalSegments: 3, mutedFound: 3, unmutedSuccess: 3, remainedMuted: 0 },
       });
 
-      expect(caption).toContain("🎬 <b>Клип 2/3 [10:00 - 11:00]</b>");
-      expect(caption).toContain("размьючено 2/2 ✅");
+      expect(block).toContain("<li>🎬 25:46:09–25:46:21 · 13с · 2.07 МБ · 480p30</li>");
+      expect(block).toContain("🔊 Звук: размьючено 3/3 ✓");
+      expect(block).toContain("⚡ Обработка: 2с");
+      expect(block).toContain('style="primary"');
+      expect(block).toContain('style="danger"');
+      expect(block).toContain('data="del:media:1"');
     });
 
-    test("audio mode shows AAC bitrate instead of video resolution", () => {
-      const caption = buildCaption({
-        range: { rawStart: "10:00", rawEnd: "11:00" },
-        hls: fakeHls,
-        muteStats: { totalSegments: 10, mutedFound: 0, unmutedSuccess: 0, remainedMuted: 0 },
-        remux: fakeRemux,
-        vodId: "123456",
-        vodUrl: "https://twitch.tv/videos/123456",
-        index: 1,
-        total: 1,
+    test("audio block shows format instead of quality", () => {
+      const block = buildMediaResultBlock({
+        ...base,
         mode: "audio",
+        durationSec: 795,
+        sizeMB: 12.28,
+        elapsedSec: 19,
+        bitrateKbps: 128,
+        muteStats: { totalSegments: 24, mutedFound: 12, unmutedSuccess: 12, remainedMuted: 0 },
       });
 
-      expect(caption).toContain("🎵 <b>Аудио [10:00 - 11:00]</b>");
-      expect(caption).toContain("AAC (2000 kbps)");
-      expect(caption).not.toContain("1080p60");
+      expect(block).toContain("🎵 25:46:09–25:46:21 · 13:15 · 12.28 МБ · AAC 128k");
+      expect(block).not.toContain("480p30");
     });
 
-    test("includes requester line when interop is provided", () => {
-      const interop: InteropPayload = {
-        from: "twitch",
-        to: 12345,
-        username: "nikita",
-        channel: null,
-      };
-
-      const caption = buildCaption({
-        range: { rawStart: "10:00", rawEnd: "11:00" },
-        hls: fakeHls,
-        muteStats: { totalSegments: 10, mutedFound: 0, unmutedSuccess: 0, remainedMuted: 0 },
-        remux: fakeRemux,
-        vodId: "123456",
-        vodUrl: "https://twitch.tv/videos/123456",
-        index: 1,
-        total: 1,
-        mode: "video",
-        interop,
+    test("transcript block shows model and polish state", () => {
+      const block = buildMediaResultBlock({
+        ...base,
+        mode: "transcript",
+        durationSec: 795,
+        sizeMB: 12.28,
+        elapsedSec: 42,
+        sttModel: PRIMARY_STT_MODEL,
+        polished: true,
+        chars: 6004,
       });
 
-      expect(caption).toContain("Инициировано из:");
-      expect(caption).toContain("nikita");
+      expect(block).toContain("🎙 25:46:09–25:46:21 · 13:15 · 6");
+      expect(block).toContain("Whisper Large V3");
+      expect(block).toContain("причесан");
     });
   });
 
-  describe("buildTranscriptCaption and transcriptBadge", () => {
-    test("buildTranscriptCaption with primary STT and polished text", () => {
-      const caption = buildTranscriptCaption({
-        range: { rawStart: "05:00", rawEnd: "06:00" },
-        stt: { text: "Привет мир", model: PRIMARY_STT_MODEL },
-        polish: { text: "Привет, мир!", polished: true },
-        durationSec: 60,
-        vodId: "999",
-        vodUrl: "https://twitch.tv/videos/999",
+  describe("buildMediaErrorBlock and buildMediaSkippedBlock", () => {
+    test("error block keeps the same shape as a result block", () => {
+      const block = buildMediaErrorBlock({
+        itemId: 2,
+        range: "07:12:04–07:12:17",
+        vodUrl: "https://www.twitch.tv/videos/1?t=7h12m4s",
+        vodLabel: "VOD 1",
+        stage: "ремуксинг MP4",
+        detail: "ffmpeg: код 1",
+        elapsedSec: 12,
       });
 
-      expect(caption).toContain("Whisper Large V3");
-      expect(caption).toContain("причесан gemini-3.5-flash-lite");
-      expect(caption).toContain("Длительность:</b> 60с");
-      expect(caption).not.toContain("fallback:");
+      expect(block).toContain("❌ 07:12:04–07:12:17 · ремуксинг MP4 — ошибка");
+      expect(block).toContain("ffmpeg: код 1");
+      expect(block).toContain("⚡ Обработка: 12с");
+      expect(block).toContain('data="del:media:2"');
     });
 
-    test("buildTranscriptCaption with fallback STT and unpolished text", () => {
-      const caption = buildTranscriptCaption({
-        range: { rawStart: "05:00", rawEnd: "06:00" },
-        stt: { text: "Сырой текст", model: FALLBACK_STT_MODEL, fallbackReason: "HTTP 429" },
-        polish: { text: "Сырой текст", polished: false, failureReason: "timeout" },
-        durationSec: 60,
-        vodId: "999",
-        vodUrl: "https://twitch.tv/videos/999",
+    test("skipped block explains the reason", () => {
+      const block = buildMediaSkippedBlock({
+        itemId: 3,
+        range: "12:45:30–12:45:43",
+        vodUrl: "https://www.twitch.tv/videos/1?t=12h45m30s",
+        vodLabel: "VOD 1",
+        reason: "качество не найдено",
       });
 
-      expect(caption).toContain("Whisper Large V3 Turbo");
-      expect(caption).toContain("fallback: HTTP 429");
-      expect(caption).toContain("сырой текст без причесывания");
-      expect(caption).toContain("timeout");
-    });
-
-    test("transcriptBadge formatting", () => {
-      expect(transcriptBadge({ text: "", model: PRIMARY_STT_MODEL }, { text: "", polished: true })).toBe(
-        "V3 · причесан",
-      );
-      expect(transcriptBadge({ text: "", model: FALLBACK_STT_MODEL }, { text: "", polished: false })).toBe(
-        "V3 Turbo ⚠️ · сырой",
-      );
-    });
-  });
-
-  describe("buildStatusMessage", () => {
-    test("builds status message with default header", () => {
-      const msg = buildStatusMessage("123", ["line 1", "line 2"]);
-      expect(msg).toContain("Обработка VOD <code>123</code>");
-      expect(msg).toContain("line 1\nline 2");
-    });
-
-    test("builds status message with custom header and subtitle", () => {
-      const msg = buildStatusMessage("123", ["line 1"], "Custom Header", "Sub text");
-      expect(msg).toContain("Custom Header");
-      expect(msg).toContain("Sub text");
-      expect(msg).toContain("line 1");
-    });
-  });
-
-  describe("buildQualityNotFoundStatus", () => {
-    test("single requested quality not found", () => {
-      const err = new QualityNotFoundError(["2160p"], ["1080p60", "720p60"]);
-      const status = buildQualityNotFoundStatus(1, 2, "10:00 - 11:00", err);
-      expect(status).toContain("качество <code>2160p</code> не найдено");
-      expect(status).toContain("доступно: 1080p60, 720p60");
-    });
-
-    test("multiple requested qualities not found", () => {
-      const err = new QualityNotFoundError(["2160p", "1440p"], ["1080p60"]);
-      const status = buildQualityNotFoundStatus(1, 2, "10:00 - 11:00", err);
-      expect(status).toContain("ни одно из запрошенных качеств (<code>2160p</code>, <code>1440p</code>) не найдено");
+      expect(block).toContain("⏭ 12:45:30–12:45:43 · пропущен (качество не найдено)");
     });
   });
 });

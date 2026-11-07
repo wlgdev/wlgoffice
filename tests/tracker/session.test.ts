@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
+import { tl } from "@mtcute/bun";
+
 import { DB } from "../../src/services/db";
 import { LiveSession, type LiveSessionDeps, type LiveSessionOptions } from "../../src/tracker/session";
 import { TrackerStore } from "../../src/tracker/store";
@@ -91,9 +93,28 @@ describe("tracker session", () => {
     await settle();
 
     expect(telegram.sent).toHaveLength(sentCount);
+    expect(telegram.sent[0]!.rich).toBe(true);
+    expect(telegram.edits[0]!.rich).toBe(true);
     expect(telegram.edits[0]!.messageId).toBe(1000);
     expect(telegram.edits[0]!.text).toContain("0:01:40");
     expect(telegram.edits[0]!.text).toContain("0:03:20");
+
+    session.stop();
+    await run;
+  });
+
+  test("rich недоступен: статус уходит обычным текстом", async () => {
+    const { session, telegram, created } = createHarness();
+    telegram.richError = new tl.RpcError(400, "MESSAGE_TOO_LONG");
+    const run = session.run();
+
+    await waitFor(() => created.length === 1);
+    created[0]!.emit("ggsel", 100);
+    await waitFor(() => telegram.sent.length === 1);
+
+    expect(telegram.sent[0]!.rich).toBeUndefined();
+    expect(telegram.sent[0]!.text).toContain("Трекер ключевых слов");
+    expect(telegram.sent[0]!.text).not.toContain("<h3>");
 
     session.stop();
     await run;

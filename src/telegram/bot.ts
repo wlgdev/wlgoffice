@@ -56,9 +56,9 @@ dp.onError((err, update) => {
   return true;
 });
 
-setupCallbackHandler(dp, tg);
+setupCallbackHandler(dp, tg, db);
 setupTrackerHandler(dp, tg, trackerService);
-setupMessageHandler(dp, tg);
+setupMessageHandler(dp, tg, db);
 
 export async function startBot(): Promise<void> {
   try {

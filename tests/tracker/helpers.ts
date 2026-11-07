@@ -1,5 +1,9 @@
 import type { StreamVariant } from "../../src/core/types";
-import type { TelegramMessagePort, TelegramMessagePortOptions } from "../../src/telegram/message-editor";
+import type {
+  RichMessageResult,
+  TelegramMessagePort,
+  TelegramMessagePortOptions,
+} from "../../src/telegram/message-editor";
 import type {
   TrackerStreamInfo,
   TrackerTranscriber,
@@ -10,13 +14,16 @@ import type {
 } from "../../src/tracker/types";
 
 export class FakeTelegram implements TelegramMessagePort {
-  sent: { chatId: number | string; text: string; disableWebPreview?: boolean; threadId?: number }[] = [];
-  edits: { chatId: number | string; messageId: number; text: string; disableWebPreview?: boolean }[] = [];
+  sent: { chatId: number | string; text: string; disableWebPreview?: boolean; threadId?: number; rich?: boolean }[] =
+    [];
+  edits: { chatId: number | string; messageId: number; text: string; disableWebPreview?: boolean; rich?: boolean }[] =
+    [];
   deleted: { chatId: number | string; messageId: number }[] = [];
   pinned: { chatId: number | string; messageId: number }[] = [];
   unpinned: { chatId: number | string; messageId: number }[] = [];
   editError?: Error;
   sendError?: Error;
+  richError?: Error;
   private nextId = 1000;
 
   async sendText(
@@ -36,6 +43,27 @@ export class FakeTelegram implements TelegramMessagePort {
     return { id: this.nextId++ };
   }
 
+  async sendRich(
+    chatId: number | string,
+    htmlText: string,
+    options?: TelegramMessagePortOptions,
+  ): Promise<RichMessageResult> {
+    if (this.richError) {
+      throw this.richError;
+    }
+    if (this.sendError) {
+      throw this.sendError;
+    }
+    this.sent.push({
+      chatId,
+      text: htmlText,
+      disableWebPreview: options?.disableWebPreview,
+      threadId: options?.threadId,
+      rich: true,
+    });
+    return { id: this.nextId++, mediaFileIds: [] };
+  }
+
   async editMessage(
     chatId: number | string,
     messageId: number,
@@ -46,6 +74,28 @@ export class FakeTelegram implements TelegramMessagePort {
       throw this.editError;
     }
     this.edits.push({ chatId, messageId, text: htmlText, disableWebPreview: options?.disableWebPreview });
+  }
+
+  async editRich(
+    chatId: number | string,
+    messageId: number,
+    htmlText: string,
+    options?: TelegramMessagePortOptions,
+  ): Promise<RichMessageResult> {
+    if (this.richError) {
+      throw this.richError;
+    }
+    if (this.editError) {
+      throw this.editError;
+    }
+    this.edits.push({
+      chatId,
+      messageId,
+      text: htmlText,
+      disableWebPreview: options?.disableWebPreview,
+      rich: true,
+    });
+    return { id: messageId, mediaFileIds: [] };
   }
 
   async deleteMessage(chatId: number | string, messageId: number): Promise<void> {

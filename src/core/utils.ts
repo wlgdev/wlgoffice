@@ -4,6 +4,14 @@ import type { ParsedTimeRange, ParsedVodMessage, VodMode, VodPlatform } from "./
 
 export type { ParsedTimeRange, ParsedVodMessage, VodMode, VodPlatform };
 
+export function formatTwitchTime(totalSec: number): string {
+  const seconds = Math.max(0, Math.floor(totalSec));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = seconds % 60;
+  return `${hours}h${minutes}m${rest}s`;
+}
+
 export function humanizeDuration(durationMs: number): string {
   if (durationMs <= 0) {
     return "0с";
