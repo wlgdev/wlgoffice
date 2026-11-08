@@ -1,6 +1,5 @@
-import { type Message, tl, type TelegramClient } from "@mtcute/bun";
+import { type Message, type TelegramClient, tl } from "@mtcute/bun";
 
-import { toTelegramHtml } from "./formatters";
 import type { TelegramMessagePort } from "./message-editor";
 
 type MediaBlockId = Extract<tl.TypePageBlock, { _: "pageBlockVideo" }>["videoId"];
@@ -44,13 +43,6 @@ function extractMediaFileIds(message: Message): string[] {
 
 export function createTelegramPort(tg: TelegramClient): TelegramMessagePort {
   return {
-    async sendText(chatId, htmlText, options) {
-      const message = await tg.sendText(chatId, toTelegramHtml(htmlText), {
-        disableWebPreview: options?.disableWebPreview,
-        threadId: options?.threadId,
-      });
-      return { id: message.id };
-    },
     async sendRich(chatId, htmlText, options) {
       const message = await tg.sendRichMessage(chatId, {
         content: { type: "html", content: htmlText, attachments: options?.attachments },
@@ -59,20 +51,11 @@ export function createTelegramPort(tg: TelegramClient): TelegramMessagePort {
       });
       return { id: message.id, mediaFileIds: extractMediaFileIds(message) };
     },
-    async editMessage(chatId, messageId, htmlText, options) {
-      await tg.editMessage({
-        chatId,
-        message: messageId,
-        text: toTelegramHtml(htmlText),
-        disableWebPreview: options?.disableWebPreview,
-      });
-    },
     async editRich(chatId, messageId, htmlText, options) {
       const message = await tg.editMessage({
         chatId,
         message: messageId,
         richMessage: { type: "html", content: htmlText, attachments: options?.attachments },
-        disableWebPreview: options?.disableWebPreview,
       });
       return { id: message.id, mediaFileIds: extractMediaFileIds(message) };
     },

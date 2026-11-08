@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
 import type { InteropPayload, MuteStats } from "../../src/core/types";
+import { PRIMARY_STT_MODEL } from "../../src/services/transcribe";
 import {
   buildDeleteMediaData,
+  buildListBlock,
   buildMediaErrorBlock,
   buildMediaResultBlock,
   buildMediaSkippedBlock,
+  buildNoticeBlock,
   buildRequesterLine,
   buildStageLine,
   escapeHtml,
@@ -13,23 +16,39 @@ import {
   formatMuteLine,
   parseDeleteMediaData,
   plural,
-  toTelegramHtml,
 } from "../../src/telegram/formatters";
-import { PRIMARY_STT_MODEL } from "../../src/services/transcribe";
 
 const AMP = String.fromCharCode(38);
 
 describe("telegram formatters", () => {
-  describe("escapeHtml and toTelegramHtml", () => {
+  describe("escapeHtml", () => {
     test("escapes HTML special characters", () => {
-      expect(escapeHtml("<test>&\"'</test>")).toBe(
-        `${AMP}lt;test${AMP}gt;${AMP}amp;"'${AMP}lt;/test${AMP}gt;`,
-      );
+      expect(escapeHtml("<test>&\"'</test>")).toBe(`${AMP}lt;test${AMP}gt;${AMP}amp;"'${AMP}lt;/test${AMP}gt;`);
+    });
+  });
+
+  describe("buildListBlock and buildNoticeBlock", () => {
+    test("список собирается из пунктов", () => {
+      expect(buildListBlock(["первый", "второй"])).toBe("<ul><li>первый</li><li>второй</li></ul>");
     });
 
-    test("converts newlines to <br>", () => {
-      const htmlText = toTelegramHtml("line1\nline2\r\nline3");
-      expect(String(htmlText)).toBeDefined();
+    test("уведомление: заголовок, текст и необязательная заметка", () => {
+      const notice = buildNoticeBlock({ icon: "❌", title: "Ошибка", body: "что-то сломалось" });
+
+      expect(notice).toContain("<h3>❌ Ошибка</h3>");
+      expect(notice).toContain("<p>что-то сломалось</p>");
+      expect(notice).not.toContain("<p>›");
+    });
+
+    test("уведомление с заметкой интеропа", () => {
+      const notice = buildNoticeBlock({
+        icon: "❌",
+        title: "Ошибка",
+        body: "текст",
+        note: buildRequesterLine({ from: "twitch", to: 1, username: null, channel: null }),
+      });
+
+      expect(notice).toContain("<p>› 🔗 <b>Инициировано из:</b> <b>twitch</b></p>");
     });
   });
 
@@ -93,15 +112,15 @@ describe("telegram formatters", () => {
     });
 
     test("all muted segments unmuted successfully", () => {
-      expect(
-        formatMuteLine({ totalSegments: 10, mutedFound: 3, unmutedSuccess: 3, remainedMuted: 0 }),
-      ).toBe("🔊 Звук: размьючено 3/3 ✓");
+      expect(formatMuteLine({ totalSegments: 10, mutedFound: 3, unmutedSuccess: 3, remainedMuted: 0 })).toBe(
+        "🔊 Звук: размьючено 3/3 ✓",
+      );
     });
 
     test("partially muted segments warning", () => {
-      expect(
-        formatMuteLine({ totalSegments: 10, mutedFound: 5, unmutedSuccess: 3, remainedMuted: 2 }),
-      ).toBe("⚠️ Звук: размьючено 3/5 (2 без звука)");
+      expect(formatMuteLine({ totalSegments: 10, mutedFound: 5, unmutedSuccess: 3, remainedMuted: 2 })).toBe(
+        "⚠️ Звук: размьючено 3/5 (2 без звука)",
+      );
     });
   });
 
@@ -156,7 +175,7 @@ describe("telegram formatters", () => {
       expect(block).toContain("<li>🎬 25:46:09–25:46:21 · 13с · 2.07 МБ · 480p30</li>");
       expect(block).toContain("🔊 Звук: размьючено 3/3 ✓");
       expect(block).toContain("⚡ Обработка: 2с");
-      expect(block).toContain('style="primary"');
+      expect(block).not.toContain('style="primary"');
       expect(block).toContain('style="danger"');
       expect(block).toContain('data="del:media:1"');
     });

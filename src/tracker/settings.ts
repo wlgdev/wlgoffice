@@ -1,5 +1,5 @@
 import { parseChatTarget } from "../core/chat-target";
-import { escapeHtml } from "../telegram/formatters";
+import { buildListBlock, escapeHtml } from "../telegram/formatters";
 import type { TrackerChannelSettings, TrackerSettings } from "./types";
 
 export const TRACKER_SETTINGS_KEY = "tracker:settings";
@@ -122,7 +122,8 @@ function normalizeChannel(login: string, raw: unknown): TrackerChannelSettings |
 
   const target = normalizeChatTarget(value.chatId);
   const threadId =
-    target.threadId ?? (typeof value.threadId === "number" && Number.isFinite(value.threadId) ? value.threadId : undefined);
+    target.threadId ??
+    (typeof value.threadId === "number" && Number.isFinite(value.threadId) ? value.threadId : undefined);
 
   return {
     enabled: Boolean(value.enabled),
@@ -188,7 +189,9 @@ export function setChat(settings: TrackerSettings, login: string, chatId?: numbe
   const key = normalizeLogin(login);
   const channel = requireChannel(settings, key);
   const target = normalizeChatTarget(chatId);
-  return { channels: { ...settings.channels, [key]: { ...channel, chatId: target.chatId, threadId: target.threadId } } };
+  return {
+    channels: { ...settings.channels, [key]: { ...channel, chatId: target.chatId, threadId: target.threadId } },
+  };
 }
 
 export function removeChannel(settings: TrackerSettings, login: string): TrackerSettings {
@@ -221,10 +224,10 @@ export function setAlias(settings: TrackerSettings, login: string, alias: string
 export function describeSettings(settings: TrackerSettings): string {
   const channels = Object.entries(settings.channels);
   if (!channels.length) {
-    return "Настроенных каналов нет. Добавь: <code>!tracker channel welovegames</code>";
+    return "<p>Настроенных каналов нет. Добавь: <code>!tracker channel welovegames</code></p>";
   }
 
-  const lines = channels.map(([login, channel]) => {
+  const items = channels.map(([login, channel]) => {
     const status = channel.enabled ? "✅ включён" : "⏸️ выключен";
     const chat =
       channel.chatId === undefined
@@ -237,13 +240,13 @@ export function describeSettings(settings: TrackerSettings): string {
       ? aliases
           .map(
             ([alias, patterns]) =>
-              `• <b>${escapeHtml(alias)}</b> (${patterns.length}) – ${patterns.map(escapeHtml).join(", ")}`,
+              `<b>${escapeHtml(alias)}</b> (${patterns.length}) – ${patterns.map(escapeHtml).join(", ")}`,
           )
-          .join("\n")
+          .join("<br>")
       : "• алиасов нет";
 
-    return `<b>${escapeHtml(login)}</b> – ${status} · чат <code>${escapeHtml(String(chat))}</code>\n${aliasLines}`;
+    return `<b>${escapeHtml(login)}</b> – ${status} · чат <code>${escapeHtml(String(chat))}</code><br>${aliasLines}`;
   });
 
-  return lines.join("\n\n");
+  return buildListBlock(items);
 }

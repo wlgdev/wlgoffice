@@ -1,6 +1,6 @@
 {
   "name": "wlgofficebot",
-  "version": "0.7.1",
+  "version": "0.9.1",
   "private": true,
   "license": "AGPL-3.0-only",
   "author": "shevernitskiy <mahahuha@ya.ru>",
@@ -19,7 +19,7 @@
   "dependencies": {
     "@mtcute/bun": "^0.32.7",
     "@mtcute/dispatcher": "^0.32.7",
-    "@shevernitskiy/llm": "npm:@jsr/shevernitskiy__llm@^0.0.32",
+    "@shevernitskiy/llm": "npm:@jsr/shevernitskiy__llm@^0.0.33",
     "@shevernitskiy/scraperator": "npm:@jsr/shevernitskiy__scraperator@^0.0.143"
   },
   "devDependencies": {

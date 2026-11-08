@@ -110,7 +110,7 @@ describe("tracker settings", () => {
     const description = describeSettings(settings);
 
     expect(description).toContain("<b>welovegames</b> – ✅ включён · чат <code>-100123</code>");
-    expect(description).toContain("• <b>ggsel</b> (2) – ggsel, джи джи сел");
+    expect(description).toContain("<b>ggsel</b> (2) – ggsel, джи джи сел");
     expect(description).not.toContain("—");
   });
 });

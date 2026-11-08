@@ -1,5 +1,3 @@
-import { html } from "@mtcute/bun";
-
 import type { InteropPayload, MuteStats, VodMode } from "../core/types";
 import { FALLBACK_STT_MODEL, PRIMARY_STT_MODEL } from "../services/transcribe";
 
@@ -10,12 +8,20 @@ const STT_MODEL_LABELS: Record<string, string> = {
   [FALLBACK_STT_MODEL]: "Whisper Large V3 Turbo",
 };
 
-export function toTelegramHtml(text: string) {
-  return html(text.replace(/\r?\n/g, "<br>"));
-}
-
 export function escapeHtml(text: string) {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+export function buildListBlock(items: string[]): string {
+  return `<ul>${items.map((item) => `<li>${item}</li>`).join("")}</ul>`;
+}
+
+export function buildNoticeBlock(params: { icon: string; title: string; body: string; note?: string }): string {
+  const parts = [`<h3>${params.icon} ${params.title}</h3>`, `<p>${params.body}</p>`];
+  if (params.note) {
+    parts.push(`<p>› ${params.note}</p>`);
+  }
+  return parts.join("");
 }
 
 export function buildRequesterLine(interop: InteropPayload | null): string {
@@ -77,7 +83,7 @@ export function formatMuteLine(stats: MuteStats | null): string {
 
 export function buildMediaButtons(vodUrl: string, vodLabel: string, itemId: number): string {
   return (
-    `<tg-button-row align="left">` +
+    `<tg-button-row align="center">` +
     `<tg-button type="url" url="${vodUrl}">🔗 ${vodLabel}</tg-button>` +
     `<tg-button type="callback_data" style="danger" data="${buildDeleteMediaData(itemId)}">🗑 Удалить</tg-button>` +
     `</tg-button-row>`

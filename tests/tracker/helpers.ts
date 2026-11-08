@@ -14,87 +14,37 @@ import type {
 } from "../../src/tracker/types";
 
 export class FakeTelegram implements TelegramMessagePort {
-  sent: { chatId: number | string; text: string; disableWebPreview?: boolean; threadId?: number; rich?: boolean }[] =
-    [];
-  edits: { chatId: number | string; messageId: number; text: string; disableWebPreview?: boolean; rich?: boolean }[] =
-    [];
+  sent: { chatId: number | string; text: string; threadId?: number; replyTo?: number }[] = [];
+  edits: { chatId: number | string; messageId: number; text: string }[] = [];
   deleted: { chatId: number | string; messageId: number }[] = [];
   pinned: { chatId: number | string; messageId: number }[] = [];
   unpinned: { chatId: number | string; messageId: number }[] = [];
   editError?: Error;
   sendError?: Error;
-  richError?: Error;
   private nextId = 1000;
-
-  async sendText(
-    chatId: number | string,
-    htmlText: string,
-    options?: TelegramMessagePortOptions,
-  ): Promise<{ id: number }> {
-    if (this.sendError) {
-      throw this.sendError;
-    }
-    this.sent.push({
-      chatId,
-      text: htmlText,
-      disableWebPreview: options?.disableWebPreview,
-      threadId: options?.threadId,
-    });
-    return { id: this.nextId++ };
-  }
 
   async sendRich(
     chatId: number | string,
     htmlText: string,
     options?: TelegramMessagePortOptions,
   ): Promise<RichMessageResult> {
-    if (this.richError) {
-      throw this.richError;
-    }
     if (this.sendError) {
       throw this.sendError;
     }
     this.sent.push({
       chatId,
       text: htmlText,
-      disableWebPreview: options?.disableWebPreview,
       threadId: options?.threadId,
-      rich: true,
+      replyTo: options?.replyTo,
     });
     return { id: this.nextId++, mediaFileIds: [] };
   }
 
-  async editMessage(
-    chatId: number | string,
-    messageId: number,
-    htmlText: string,
-    options?: TelegramMessagePortOptions,
-  ): Promise<void> {
+  async editRich(chatId: number | string, messageId: number, htmlText: string): Promise<RichMessageResult> {
     if (this.editError) {
       throw this.editError;
     }
-    this.edits.push({ chatId, messageId, text: htmlText, disableWebPreview: options?.disableWebPreview });
-  }
-
-  async editRich(
-    chatId: number | string,
-    messageId: number,
-    htmlText: string,
-    options?: TelegramMessagePortOptions,
-  ): Promise<RichMessageResult> {
-    if (this.richError) {
-      throw this.richError;
-    }
-    if (this.editError) {
-      throw this.editError;
-    }
-    this.edits.push({
-      chatId,
-      messageId,
-      text: htmlText,
-      disableWebPreview: options?.disableWebPreview,
-      rich: true,
-    });
+    this.edits.push({ chatId, messageId, text: htmlText });
     return { id: messageId, mediaFileIds: [] };
   }
 

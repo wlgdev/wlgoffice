@@ -82,6 +82,20 @@ function mediaAttachment(media: MediaJobMedia): InputRichMessageMedia | null {
   return InputMedia.document(`file:${media.localPath}`);
 }
 
+const MAX_RICH_LENGTH = 32000;
+const MAX_RICH_BLOCKS = 500;
+const HIDDEN_RESERVE = 64;
+const BLOCK_TAG_RE =
+  /<(?:h[1-6]|p|ul|ol|footer|hr|blockquote|details|table|tg-button-row|tg-collage|tg-slideshow|aside|figure|video|audio|tg-document|img)[ >\/]/g;
+const LIST_ITEM_RE = /<li[ >]/g;
+
+/**
+ * Считает блоки rich-сообщения: у Telegram их не больше 500, вместе со вложенными.
+ */
+function countBlocks(html: string): number {
+  return (html.match(BLOCK_TAG_RE)?.length ?? 0) + (html.match(LIST_ITEM_RE)?.length ?? 0);
+}
+
 /**
  * Собирает rich-сообщение медиа-задачи: карточка статуса (пока есть незавершённые
  * интервалы) и готовые блоки результатов с кнопками.
@@ -95,13 +109,12 @@ export function renderMediaJob(snapshot: MediaJobSnapshot): {
   const pending = snapshot.items.filter((item) => !item.block);
 
   if (pending.length) {
+    const meta = [
+      `${snapshot.source} · обработано ${snapshot.items.length - pending.length} из ${snapshot.items.length}`,
+      ...snapshot.notes,
+    ];
     parts.push(`<h3>${snapshot.title}</h3>`);
-    parts.push(
-      `<p>${snapshot.source} · обработано ${snapshot.items.length - pending.length} из ${snapshot.items.length}</p>`,
-    );
-    for (const note of snapshot.notes) {
-      parts.push(`<p>${note}</p>`);
-    }
+    parts.push(`<p>${meta.join("<br>")}<br><br></p>`);
     parts.push(
       `<ul>${pending
         .map((item) => {
@@ -110,23 +123,42 @@ export function renderMediaJob(snapshot: MediaJobSnapshot): {
         })
         .join("")}</ul>`,
     );
+    if (snapshot.items.some((item) => item.block)) {
+      parts.push(`<p><br></p>`);
+    }
   }
 
+  let html = parts.join("");
+  let blocks = countBlocks(html);
   let key = 0;
+  let hidden = 0;
+
   for (const item of snapshot.items) {
     if (!item.block) {
       continue;
     }
-    const attachment = item.media ? mediaAttachment(item.media) : null;
-    if (attachment && item.media) {
-      key += 1;
-      attachments[String(key)] = attachment;
-      parts.push(mediaTag(item.media.type, String(key)));
+    const media = item.media;
+    const attachment = media ? mediaAttachment(media) : null;
+    const nextKey = key + 1;
+    const chunk = (attachment && media ? mediaTag(media.type, String(nextKey)) : "") + item.block;
+    const chunkBlocks = countBlocks(chunk);
+    if (html.length + chunk.length + HIDDEN_RESERVE > MAX_RICH_LENGTH || blocks + chunkBlocks + 1 > MAX_RICH_BLOCKS) {
+      hidden++;
+      continue;
     }
-    parts.push(item.block);
+    if (attachment) {
+      key = nextKey;
+      attachments[String(key)] = attachment;
+    }
+    html += chunk;
+    blocks += chunkBlocks;
   }
 
-  return { html: parts.join(""), attachments };
+  if (hidden) {
+    html += `<p><i>…ещё ${hidden}</i></p>`;
+  }
+
+  return { html, attachments };
 }
 
 /**
@@ -180,7 +212,6 @@ export class MediaJobMessage extends MessageEditor {
     try {
       const result = await this.port.editRich(this.chatId, this.messageId!, html, {
         attachments,
-        threadId: this.threadId,
       });
       this.lastSentHtml = html;
       this.captureMedia(result.mediaFileIds);

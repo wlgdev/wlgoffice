@@ -147,18 +147,18 @@ describe("tracker message", () => {
     expect(text.match(/<a href="https:\/\/www\.twitch\.tv\/videos\/vod-1\?t=/g)!.length).toBeLessThanOrEqual(500);
   });
 
-  test("обычный текст укладывается в лимит Telegram (4096)", () => {
+  test("блоков в сообщении не больше лимита Telegram (500)", () => {
     const hits = Array.from({ length: 600 }, (_, index) => ({
-      alias: "ggsel",
-      text: "ggsel",
+      alias: `алиас-${index}`,
+      text: "hit",
       timeSec: index * 60,
     }));
 
-    const text = buildTrackerMessage(state({ hits, counts: { ggsel: 600 } }), false);
+    const text = buildTrackerMessage(state({ hits, counts: { ggsel: 600 } }));
 
-    expect(text.length).toBeLessThanOrEqual(4096);
-    expect(text).toContain("…ещё");
-    expect(text).not.toContain("<h3>");
+    const blocks = text.match(/<(?:h[1-6]|p|ul|footer)[ >]/g)?.length ?? 0;
+    const items = text.match(/<li[ >]/g)?.length ?? 0;
+    expect(blocks + items).toBeLessThanOrEqual(500);
   });
 
   test("формат объёма данных", () => {
@@ -191,7 +191,7 @@ describe("tracker message", () => {
       }),
     ]);
 
-    expect(text).toContain("🔎 <b>Активные сессии</b>");
+    expect(text).toContain("<h4>Активные сессии</h4>");
     expect(text).toContain("<b>@welovegames</b>");
     expect(text).toContain("<code>123456789</code>");
     expect(text).toContain("01.11.2026 14:23");

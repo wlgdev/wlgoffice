@@ -5,7 +5,6 @@ import logger from "../logger";
 export type MessageEditError = "message_not_modified" | "message_id_invalid" | "chat_write_forbidden" | "unknown";
 
 export interface TelegramMessagePortOptions {
-  disableWebPreview?: boolean;
   threadId?: number;
   replyTo?: number;
   attachments?: Record<string, InputRichMessageMedia>;
@@ -17,18 +16,7 @@ export interface RichMessageResult {
 }
 
 export interface TelegramMessagePort {
-  sendText(chatId: number | string, htmlText: string, options?: TelegramMessagePortOptions): Promise<{ id: number }>;
-  sendRich(
-    chatId: number | string,
-    htmlText: string,
-    options?: TelegramMessagePortOptions,
-  ): Promise<RichMessageResult>;
-  editMessage(
-    chatId: number | string,
-    messageId: number,
-    htmlText: string,
-    options?: TelegramMessagePortOptions,
-  ): Promise<void>;
+  sendRich(chatId: number | string, htmlText: string, options?: TelegramMessagePortOptions): Promise<RichMessageResult>;
   editRich(
     chatId: number | string,
     messageId: number,
@@ -59,7 +47,6 @@ export function classifyTelegramError(err: unknown): MessageEditError {
  */
 export abstract class MessageEditor {
   public messageId: number | undefined;
-  protected disableLinkPreview = false;
   private lastEditAt = 0;
   private lastEditText = "";
   private pendingText: string | null = null;
@@ -82,9 +69,7 @@ export abstract class MessageEditor {
   }
 
   protected async editMessage(text: string): Promise<void> {
-    await this.port.editMessage(this.chatId, this.messageId!, text, {
-      disableWebPreview: this.disableLinkPreview,
-    });
+    await this.port.editRich(this.chatId, this.messageId!, text);
   }
 
   protected onMessageCreated(_messageId: number): void {}

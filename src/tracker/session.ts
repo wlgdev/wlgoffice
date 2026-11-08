@@ -97,7 +97,7 @@ export class LiveSession {
       deps.telegram,
       opts.chatId,
       this.messageId,
-      (rich) => buildTrackerMessage(this.state(), rich),
+      () => buildTrackerMessage(this.state()),
       (messageId) => {
         this.messageId = messageId;
         void this.pin();

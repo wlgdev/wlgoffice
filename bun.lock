@@ -7,7 +7,7 @@
       "dependencies": {
         "@mtcute/bun": "^0.32.7",
         "@mtcute/dispatcher": "^0.32.7",
-        "@shevernitskiy/llm": "npm:@jsr/shevernitskiy__llm@^0.0.32",
+        "@shevernitskiy/llm": "npm:@jsr/shevernitskiy__llm@^0.0.33",
         "@shevernitskiy/scraperator": "npm:@jsr/shevernitskiy__scraperator@^0.0.143",
       },
       "devDependencies": {
@@ -43,7 +43,7 @@
 
     "@mtcute/wasm": ["@mtcute/wasm@0.32.6", "", {}, "sha512-vDq8YdLoaZQfDKmc/ANa3cBg0i+vkWn+LRFUPzv4dt24BNC695b1c0M8coI8+z4JcwaVFnzjBusXTe8bL0W2Qg=="],
 
-    "@shevernitskiy/llm": ["@jsr/shevernitskiy__llm@0.0.32", "https://npm.jsr.io/~/11/@jsr/shevernitskiy__llm/0.0.32.tgz", {}, "sha512-Z6vVDqUiIqaQzRhKcOQa5YpNPNo47SZSC7LqhMx2uEkvg1T+xGnw7BbUM3z6GqBFpfeJbrlGM5e9JEES0HAOwA=="],
+    "@shevernitskiy/llm": ["@jsr/shevernitskiy__llm@0.0.33", "https://npm.jsr.io/~/11/@jsr/shevernitskiy__llm/0.0.33.tgz", {}, "sha512-/Zg88Ov7EGrRkR3SJGfdamUck7bEJ79MHx99MrNoJ43QJScfbVuQ5dA6rykkcxXvaTonwdU2qmur8EfPADVpxg=="],
 
     "@shevernitskiy/scraperator": ["@jsr/shevernitskiy__scraperator@0.0.143", "https://npm.jsr.io/~/11/@jsr/shevernitskiy__scraperator/0.0.143.tgz", {}, "sha512-HRKTktv1h8W7jU7Udx5jwRtzzjSEvVOwvOhTQrEfxmjCuCr2PE0CL+T1tDzrdMkczLnjYG7gTfuAKzqcXrfX9g=="],
 

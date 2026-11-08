@@ -16,7 +16,7 @@ import { getVodHlsStream, QualityNotFoundError } from "../../services/hls";
 import { EmptyTranscriptError, FALLBACK_STT_MODEL, RateLimitError } from "../../services/transcribe";
 import { ChannelOfflineError, DEFAULT_CHANNEL, resolveLiveVod } from "../../services/twitch";
 import { getVkHlsStream } from "../../services/vk";
-import { buildMediaResultBlock, buildRequesterLine, buildStageLine, escapeHtml, toTelegramHtml } from "../formatters";
+import { buildMediaResultBlock, buildNoticeBlock, buildRequesterLine, buildStageLine, escapeHtml } from "../formatters";
 import { validateInterop } from "../interop-guard";
 import { MediaJobMessage } from "../media-job";
 import { createTelegramPort } from "../telegram-port";
@@ -35,16 +35,12 @@ function isChannelChat(msg: MessageContext): boolean {
   return "chatType" in msg.chat && msg.chat.chatType === "channel";
 }
 
-function answerText(
-  tg: TelegramClient,
-  msg: MessageContext,
-  text: ReturnType<typeof toTelegramHtml>,
-  threadId?: number,
-) {
+function answerRich(tg: TelegramClient, msg: MessageContext, html: string, threadId?: number) {
+  const content = { type: "html" as const, content: html };
   if (isChannelChat(msg)) {
-    return tg.sendText(msg.chat.id, text);
+    return tg.sendRichMessage(msg.chat.inputPeer, { content });
   }
-  return msg.replyText(text, { threadId });
+  return tg.sendRichMessage(msg.chat.inputPeer, { content, replyTo: msg.id, threadId });
 }
 
 function describeItemError(err: unknown): string {
@@ -76,7 +72,7 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient, db: DB):
       const text = msg.text;
 
       if (text === "!ping") {
-        await answerText(tg, msg, toTelegramHtml("pong"), getMessageThreadId(msg));
+        await answerRich(tg, msg, "<p>🏓 pong</p>", getMessageThreadId(msg));
         return PropagationAction.Continue;
       }
 
@@ -91,7 +87,7 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient, db: DB):
       if (interop) {
         const problem = validateInterop(msg, interop);
         if (problem) {
-          await answerText(tg, msg, toTelegramHtml(problem));
+          await answerRich(tg, msg, buildNoticeBlock({ icon: "❌", title: "Ошибка", body: problem }));
           return PropagationAction.Continue;
         }
         targetChatId = interop.to!;
@@ -103,10 +99,18 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient, db: DB):
         targetThreadId = access.threadId;
       }
 
-      const sendStatus = async (statusText: ReturnType<typeof toTelegramHtml>) =>
-        interop ? tg.sendText(targetChatId, statusText) : answerText(tg, msg, statusText, targetThreadId);
+      const sendStatus = async (html: string) =>
+        interop
+          ? tg.sendRichMessage(targetChatId, { content: { type: "html", content: html } })
+          : answerRich(tg, msg, html, targetThreadId);
 
-      const errorStatus = (body: string) => (interop ? `${body}\n${buildRequesterLine(interop)}` : body);
+      const errorStatus = (body: string) =>
+        buildNoticeBlock({
+          icon: "❌",
+          title: "Ошибка",
+          body,
+          note: interop ? buildRequesterLine(interop) : undefined,
+        });
 
       const isAudio = mode === "audio";
       const isTranscript = mode === "transcript";
@@ -115,9 +119,7 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient, db: DB):
       try {
         parsedVod = parseVodMessage(cmdText, config.twitch.channels);
       } catch (e: any) {
-        await sendStatus(
-          toTelegramHtml(errorStatus(`❌ <b>Ошибка парсинга команды:</b> <code>${e?.message || e}</code>`)),
-        );
+        await sendStatus(errorStatus(`Ошибка парсинга команды: <code>${escapeHtml(String(e?.message || e))}</code>`));
         return PropagationAction.Continue;
       }
 
@@ -125,28 +127,18 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient, db: DB):
         const from = interop.from;
 
         if (from !== "twitch" && from !== "vk") {
-          await sendStatus(
-            toTelegramHtml(
-              errorStatus(`❌ <b>Интероп:</b> источник <code>${escapeHtml(from)}</code> не поддерживается.`),
-            ),
-          );
+          await sendStatus(errorStatus(`Интероп: источник <code>${escapeHtml(from)}</code> не поддерживается.`));
           return PropagationAction.Continue;
         }
 
         if (from === "vk" && parsedVod.platform !== "vk") {
-          await sendStatus(
-            toTelegramHtml(errorStatus("❌ <b>Интероп:</b> для источника <code>vk</code> нужна ссылка на видео.")),
-          );
+          await sendStatus(errorStatus("Интероп: для источника <code>vk</code> нужна ссылка на видео."));
           return PropagationAction.Continue;
         }
 
         if (from === "twitch") {
           if (parsedVod.platform === "vk") {
-            await sendStatus(
-              toTelegramHtml(
-                errorStatus("❌ <b>Интероп:</b> источник <code>twitch</code>, но в команде ссылка на VK Видео."),
-              ),
-            );
+            await sendStatus(errorStatus("Интероп: источник <code>twitch</code>, но в команде ссылка на VK Видео."));
             return PropagationAction.Continue;
           }
 
@@ -159,22 +151,16 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient, db: DB):
         }
       } else if (!parsedVod.platform) {
         await sendStatus(
-          toTelegramHtml(
-            errorStatus(
-              "❌ <b>Ошибка:</b> не удалось распознать ссылку (Twitch VOD или VK Видео) " +
-                "или канал (<code>влг</code>/<code>wlg</code>, <code>табула</code>/<code>tabula</code>).",
-            ),
+          errorStatus(
+            "не удалось распознать ссылку (Twitch VOD или VK Видео) " +
+              "или канал (<code>влг</code>/<code>wlg</code>, <code>табула</code>/<code>tabula</code>).",
           ),
         );
         return PropagationAction.Continue;
       }
 
       if (!parsedVod.ranges.length) {
-        await sendStatus(
-          toTelegramHtml(
-            errorStatus("❌ <b>Ошибка:</b> не найдены временные интервалы (например: <code>10:00 - 12:30</code>)."),
-          ),
-        );
+        await sendStatus(errorStatus("не найдены временные интервалы (например: <code>10:00 - 12:30</code>)."));
         return PropagationAction.Continue;
       }
 
@@ -189,9 +175,9 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient, db: DB):
         } catch (e: any) {
           const reason =
             e instanceof ChannelOfflineError
-              ? `Канал <code>${channelName}</code> сейчас не в эфире — клипить нечего.`
-              : `Не удалось найти VOD текущего эфира канала <code>${channelName}</code>: ${e?.message || e}`;
-          await sendStatus(toTelegramHtml(errorStatus(`❌ <b>Ошибка:</b> ${reason}`)));
+              ? `Канал <code>${escapeHtml(channelName)}</code> сейчас не в эфире — клипить нечего.`
+              : `Не удалось найти VOD текущего эфира канала <code>${escapeHtml(channelName)}</code>: ${escapeHtml(String(e?.message || e))}`;
+          await sendStatus(errorStatus(reason));
           return PropagationAction.Continue;
         }
 
@@ -278,10 +264,14 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient, db: DB):
         logger.error("Не удалось отправить стартовое сообщение в чат:", detail);
         if (interop) {
           try {
-            await answerText(
+            await answerRich(
               tg,
               msg,
-              toTelegramHtml(`❌ <b>Не удалось отправить статус в чат <code>${targetChatId}</code>.</b>`),
+              buildNoticeBlock({
+                icon: "❌",
+                title: "Ошибка",
+                body: `Не удалось отправить статус в чат <code>${targetChatId}</code>.`,
+              }),
             );
           } catch {}
         }
@@ -502,37 +492,50 @@ export function setupMessageHandler(dp: Dispatcher, tg: TelegramClient, db: DB):
       await mediaJob.finish();
 
       if (interop) {
-        await answerText(
+        await answerRich(
           tg,
           msg,
-          toTelegramHtml(
-            successCount === totalRanges
-              ? `✅ <b>Готово:</b> ${successCount} из ${totalRanges} в чат ${targetChatId}.`
-              : `⚠️ <b>Готово частично:</b> ${successCount} из ${totalRanges} в чат ${targetChatId}. ` +
+          successCount === totalRanges
+            ? buildNoticeBlock({
+                icon: "✅",
+                title: "Готово",
+                body: `${successCount} из ${totalRanges} в чат <code>${targetChatId}</code>.`,
+              })
+            : buildNoticeBlock({
+                icon: "⚠️",
+                title: "Готово частично",
+                body:
+                  `${successCount} из ${totalRanges} в чат <code>${targetChatId}</code>. ` +
                   "Подробности — в сообщении с результатами.",
-          ),
+              }),
         );
       }
     } catch (fatalError: any) {
       logger.error("💥 [Fatal Handler Error]:", fatalError);
-      const fatalText = `💥 Критическая ошибка: ${fatalError?.message || fatalError}`;
+      const fatalText = String(fatalError?.message || fatalError);
       if (job) {
         job.abort(fatalText);
         await job.finish();
       } else {
         try {
-          await answerText(tg, msg, toTelegramHtml(`❌ <b>${escapeHtml(fatalText)}</b>`));
+          await answerRich(
+            tg,
+            msg,
+            buildNoticeBlock({ icon: "💥", title: "Критическая ошибка", body: escapeHtml(fatalText) }),
+          );
         } catch {}
       }
 
       if (interop) {
         try {
-          await answerText(
+          await answerRich(
             tg,
             msg,
-            toTelegramHtml(
-              `💥 <b>Обработка прервана.</b> Подробности — в сообщении с результатами в чате <code>${targetChatId}</code>.`,
-            ),
+            buildNoticeBlock({
+              icon: "💥",
+              title: "Обработка прервана",
+              body: `Подробности — в сообщении с результатами в чате <code>${targetChatId}</code>.`,
+            }),
           );
         } catch {}
       }

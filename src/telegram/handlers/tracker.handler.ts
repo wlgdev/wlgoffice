@@ -17,13 +17,14 @@ import {
   TrackerSettingsError,
 } from "../../tracker/settings";
 import type { TrackerSettings } from "../../tracker/types";
-import { escapeHtml, toTelegramHtml } from "../formatters";
+import { buildListBlock, buildNoticeBlock, escapeHtml } from "../formatters";
 import { getMessageThreadId } from "../topic";
 
 const COMMAND = "!tracker";
 
+const TITLE = "<h3>🔎 Трекер ключевых слов</h3>";
+
 const USAGE = [
-  "<b>Команды трекера:</b>",
   "<code>!tracker list</code> – текущие настройки",
   "<code>!tracker channel [login] [chatId]</code> – добавить/включить канал",
   "<code>!tracker enable|disable [login]</code> – вкл/выкл трекинг",
@@ -31,7 +32,7 @@ const USAGE = [
   "<code>!tracker alias [login] [alias] [паттерны через запятую]</code> – задать паттерны",
   "<code>!tracker rm [login]</code> – удалить канал",
   "<code>!tracker export</code> – настройки в JSON",
-].join("\n");
+];
 
 export function splitCommand(rest: string): { command: string; args: string; tokens: string[] } {
   const trimmed = rest.trim();
@@ -100,7 +101,7 @@ export interface TrackerMessageContext {
 
 export async function handleTrackerMessage(
   msg: TrackerMessageContext,
-  tg: Pick<TelegramClient, "sendText">,
+  tg: Pick<TelegramClient, "sendRichMessage">,
   service: TrackerService,
 ): Promise<PropagationAction | undefined> {
   const text = msg.text?.trim();
@@ -111,26 +112,26 @@ export async function handleTrackerMessage(
   if (!access) {
     return PropagationAction.Continue;
   }
-  const send = (html: ReturnType<typeof toTelegramHtml>) => tg.sendText(msg.chat.id, html, { threadId: access.threadId });
+  const send = (html: string) =>
+    tg.sendRichMessage(msg.chat.id, { content: { type: "html", content: html }, threadId: access.threadId });
 
   const { command, args, tokens } = splitCommand(text.slice(COMMAND.length));
 
   try {
     if (!command) {
-      await send(toTelegramHtml(USAGE));
+      await send(`${TITLE}${buildListBlock(USAGE)}`);
       return undefined;
     }
 
     if (command === "list") {
       const settings = describeSettings(service.getSettings());
       const sessions = buildSessionsMessage(service.listActiveSessions());
-      const text = sessions ? `${settings}\n\n${sessions}` : settings;
-      await send(toTelegramHtml(`🔎 <b>Трекер ключевых слов</b>\n\n${text}`));
+      await send(`${TITLE}${settings}${sessions}`);
       return undefined;
     }
 
     if (command === "export") {
-      await send(toTelegramHtml(`<pre>${escapeHtml(JSON.stringify(service.getSettings(), null, 2))}</pre>`));
+      await send(`${TITLE}<pre><code>${escapeHtml(JSON.stringify(service.getSettings(), null, 2))}</code></pre>`);
       return undefined;
     }
 
@@ -138,17 +139,18 @@ export async function handleTrackerMessage(
     service.saveSettings(settings);
     void service.tick();
 
-    await send(toTelegramHtml(`✅ <b>Готово.</b>\n\n${describeSettings(settings)}`));
+    await send(`<h3>✅ Готово</h3>${describeSettings(settings)}`);
   } catch (err) {
     const message = err instanceof TrackerSettingsError ? err.message : String(err);
-    await send(toTelegramHtml(`❌ <b>Ошибка:</b> ${escapeHtml(message)}`));
+    await send(buildNoticeBlock({ icon: "❌", title: "Ошибка", body: escapeHtml(message) }));
   }
 
   return undefined;
 }
 
 export function setupTrackerHandler(dp: Dispatcher, tg: TelegramClient, service: TrackerService): void {
-  dp.onNewMessage(async (msg) =>
-    await handleTrackerMessage({ text: msg.text, chat: msg.chat, threadId: getMessageThreadId(msg) }, tg, service),
+  dp.onNewMessage(
+    async (msg) =>
+      await handleTrackerMessage({ text: msg.text, chat: msg.chat, threadId: getMessageThreadId(msg) }, tg, service),
   );
 }

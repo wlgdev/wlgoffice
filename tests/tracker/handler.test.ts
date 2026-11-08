@@ -11,10 +11,14 @@ import { TrackerStore } from "../../src/tracker/store";
 import { createTranscriberFactory, FakeTelegram, FakeTwitch, waitFor } from "./helpers";
 
 class FakeTg {
-  sent: { chatId: number | string; text: string }[] = [];
+  sent: { chatId: number | string; text: string; threadId?: number }[] = [];
 
-  async sendText(chatId: number | string, text: any): Promise<any> {
-    this.sent.push({ chatId, text: typeof text === "string" ? text : (text?.text ?? "") });
+  async sendRichMessage(chatId: number | string, params: any): Promise<any> {
+    this.sent.push({
+      chatId,
+      text: params?.content?.content ?? "",
+      threadId: params?.threadId,
+    });
     return { id: 1 };
   }
 }
@@ -111,6 +115,8 @@ describe("tracker handler", () => {
     expect(tg.sent).toHaveLength(1);
     expect(tg.sent[0]!.chatId).toBe(chatId);
     expect(tg.sent[0]!.text).toContain("welovegames");
+    expect(tg.sent[0]!.text).toContain("<h3>");
+    expect(tg.sent[0]!.text).toContain("<ul>");
   });
 
   test("!tracker без аргументов показывает справку", async () => {
@@ -122,6 +128,7 @@ describe("tracker handler", () => {
 
     expect(tg.sent).toHaveLength(1);
     expect(tg.sent[0]!.text).toContain("!tracker list");
+    expect(tg.sent[0]!.text).toContain("<ul>");
   });
 
   test("неизвестная команда отвечает ошибкой, а не молчит", async () => {

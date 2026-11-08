@@ -93,8 +93,6 @@ describe("tracker session", () => {
     await settle();
 
     expect(telegram.sent).toHaveLength(sentCount);
-    expect(telegram.sent[0]!.rich).toBe(true);
-    expect(telegram.edits[0]!.rich).toBe(true);
     expect(telegram.edits[0]!.messageId).toBe(1000);
     expect(telegram.edits[0]!.text).toContain("0:01:40");
     expect(telegram.edits[0]!.text).toContain("0:03:20");
@@ -103,18 +101,16 @@ describe("tracker session", () => {
     await run;
   });
 
-  test("rich недоступен: статус уходит обычным текстом", async () => {
+  test("rich недоступен: статус не создаётся, ошибка не роняет сессию", async () => {
     const { session, telegram, created } = createHarness();
-    telegram.richError = new tl.RpcError(400, "MESSAGE_TOO_LONG");
+    telegram.sendError = new Error("MESSAGE_TOO_LONG");
     const run = session.run();
 
     await waitFor(() => created.length === 1);
     created[0]!.emit("ggsel", 100);
-    await waitFor(() => telegram.sent.length === 1);
+    await settle(50);
 
-    expect(telegram.sent[0]!.rich).toBeUndefined();
-    expect(telegram.sent[0]!.text).toContain("Трекер ключевых слов");
-    expect(telegram.sent[0]!.text).not.toContain("<h3>");
+    expect(telegram.sent).toHaveLength(0);
 
     session.stop();
     await run;
@@ -271,7 +267,6 @@ describe("tracker session", () => {
 
     const edit = telegram.edits.at(-1)!;
     expect(edit.text).toContain("?t=0h1m40s");
-    expect(edit.disableWebPreview).toBe(true);
 
     session.stop();
     await run;

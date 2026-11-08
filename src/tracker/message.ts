@@ -1,21 +1,13 @@
-import { tl } from "@mtcute/bun";
-
 import { formatTwitchTime, humanizeDuration } from "../core/utils";
-import logger from "../logger";
-import { escapeHtml } from "../telegram/formatters";
-import {
-  classifyTelegramError,
-  type MessageEditError,
-  MessageEditor,
-  type TelegramMessagePort,
-} from "../telegram/message-editor";
+import { buildListBlock, escapeHtml } from "../telegram/formatters";
+import { type MessageEditError, MessageEditor, type TelegramMessagePort } from "../telegram/message-editor";
 import type { TrackerHit, TrackerSessionState } from "./types";
 
 const VOD_BASE_URL = "https://www.twitch.tv/videos/";
 const CHANNEL_BASE_URL = "https://www.twitch.tv/";
 const MAX_RICH_LENGTH = 32000;
-const MAX_PLAIN_LENGTH = 4096;
-const MAX_LINKS = 500;
+const MAX_RICH_BLOCKS = 500;
+const MAX_LIST_ITEMS = MAX_RICH_BLOCKS - 5;
 const BYTE_UNITS = ["Б", "КБ", "МБ", "ГБ"];
 
 export function formatTimestamp(totalSec: number): string {
@@ -109,16 +101,14 @@ function groupHits(hits: TrackerHit[]): { order: string[]; entries: TimestampEnt
 /**
  * Собирает статусное сообщение трекера: заголовок с VOD, таймстемпы по алиасам, футер завершения.
  */
-export function buildTrackerMessage(state: TrackerSessionState, rich = true): string {
-  const maxLength = rich ? MAX_RICH_LENGTH : MAX_PLAIN_LENGTH;
+export function buildTrackerMessage(state: TrackerSessionState): string {
   const title = escapeHtml((state.vodTitle?.trim() || state.channel).slice(0, 200));
-  const channelUrl = `${CHANNEL_BASE_URL}${state.channel}`;
+  const channel = escapeHtml(state.channel);
+  const channelUrl = `${CHANNEL_BASE_URL}${channel}`;
   const date = formatDate(state.startTimeMs ?? state.startedAt);
   const vodLink = state.vodId ? ` • <a href="${VOD_BASE_URL}${state.vodId}">${state.vodId}</a>` : "";
 
-  const header = rich
-    ? `<h3>🔎 Трекер ключевых слов</h3><p>› ${date} • <a href="${channelUrl}">@${state.channel}</a>${vodLink}<br>› ${title}${state.hits.length ? "<br><br>" : ""}</p>`
-    : `🔎 <b>Трекер ключевых слов</b>\n› ${date} • <a href="${channelUrl}">@${state.channel}</a>${vodLink}\n› ${title}`;
+  const header = `<h3>🔎 Трекер ключевых слов</h3><p>› ${date} • <a href="${channelUrl}">@${channel}</a>${vodLink}<br>› ${title}${state.hits.length ? "<br><br>" : ""}</p>`;
 
   const counts = Object.entries(state.counts)
     .filter(([, count]) => count > 0)
@@ -127,16 +117,12 @@ export function buildTrackerMessage(state: TrackerSessionState, rich = true): st
     ? `📊 <b>Итого:</b> ${counts.map(([alias, count]) => `${escapeHtml(alias)} – ${count}`).join(", ")}`
     : "";
   const footer =
-    state.status === "closed"
-      ? rich
-        ? `<footer>🏁 <b>Эфир завершён</b>${countsLine ? `<br>${countsLine}` : ""}</footer>`
-        : `\n\n🏁 <b>Эфир завершён</b>${countsLine ? `\n${countsLine}` : ""}`
-      : "";
+    state.status === "closed" ? `<footer>🏁 <b>Эфир завершён</b>${countsLine ? `<br>${countsLine}` : ""}</footer>` : "";
 
   const hits = [...state.hits].sort((a, b) => a.timeSec - b.timeSec);
   const { order, entries } = groupHits(hits);
-  const aliasOverhead = order.reduce((sum, alias) => sum + alias.length + (rich ? 16 : 10), 0);
-  const budget = maxLength - header.length - footer.length - aliasOverhead - 32;
+  const aliasOverhead = order.reduce((sum, alias) => sum + alias.length + 16, 0);
+  const budget = MAX_RICH_LENGTH - header.length - footer.length - aliasOverhead - 32;
 
   const selected: (TimestampEntry & { text: string })[] = [];
   let used = 0;
@@ -145,7 +131,7 @@ export function buildTrackerMessage(state: TrackerSessionState, rich = true): st
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i]!;
     const text = renderTimestamp(entry.timeSec, entry.count, state.vodId);
-    if (selected.length >= MAX_LINKS || used + text.length + 2 > budget) {
+    if (selected.length >= MAX_LIST_ITEMS || used + text.length + 2 > budget) {
       hidden++;
       continue;
     }
@@ -162,16 +148,14 @@ export function buildTrackerMessage(state: TrackerSessionState, rich = true): st
     }
   }
 
-  const lines = [...grouped.entries()].map(([alias, list]) =>
-    rich
-      ? `<li><b>${escapeHtml(alias)}</b>: ${list.join(", ")}</li>`
-      : `• <b>${escapeHtml(alias)}:</b> ${list.join(", ")}`,
+  const lines = [...grouped.entries()].map(
+    ([alias, list]) => `<li><b>${escapeHtml(alias)}</b>: ${list.join(", ")}</li>`,
   );
   if (hidden > 0) {
-    lines.push(rich ? `<li><i>…ещё ${hidden}</i></li>` : `…ещё ${hidden}`);
+    lines.push(`<li><i>…ещё ${hidden}</i></li>`);
   }
 
-  const body = lines.length ? (rich ? `<ul>${lines.join("")}</ul>` : `\n\n${lines.join("\n")}`) : "";
+  const body = lines.length ? `<ul>${lines.join("")}</ul>` : "";
   return `${header}${body}${footer}`;
 }
 
@@ -180,16 +164,13 @@ export function buildSessionsMessage(states: TrackerSessionState[]): string {
     return "";
   }
 
-  const lines = states.map((state) => {
+  const items = states.map((state) => {
     const streamStart = state.startTimeMs ?? state.startedAt;
     const uptime = humanizeDuration(Date.now() - state.startedAt);
-    return [
-      `• <b>@${escapeHtml(state.channel)}</b> — эфир <code>${escapeHtml(state.broadcastId)}</code>`,
-      `  эфир с ${formatDate(streamStart)} ${formatTime(streamStart)} · сессия ${uptime} (с ${formatTime(state.startedAt)}) · в Gemini: ${formatBytes(state.sentBytes)} · символов: ${formatCharCount(state.receivedChars)}`,
-    ].join("\n");
+    return `<b>@${escapeHtml(state.channel)}</b> — эфир <code>${escapeHtml(state.broadcastId)}</code><br>эфир с ${formatDate(streamStart)} ${formatTime(streamStart)} · сессия ${uptime} (с ${formatTime(state.startedAt)}) · в Gemini: ${formatBytes(state.sentBytes)} · символов: ${formatCharCount(state.receivedChars)}`;
   });
 
-  return `🔎 <b>Активные сессии</b>\n\n${lines.join("\n")}`;
+  return `<h4>Активные сессии</h4>${buildListBlock(items)}`;
 }
 
 /**
@@ -197,60 +178,25 @@ export function buildSessionsMessage(states: TrackerSessionState[]): string {
  * если пользователь удалил исходный пост.
  */
 export class TrackerStatusMessage extends MessageEditor {
-  private rich = true;
-
   constructor(
     port: TelegramMessagePort,
     chatId: number | string,
     messageId: number | undefined,
-    private readonly render: (rich: boolean) => string,
+    private readonly render: () => string,
     private readonly onMessageId?: (messageId: number) => void,
     minEditDelayMs = 1500,
     private readonly threadId?: number,
   ) {
     super(port, chatId, messageId, minEditDelayMs);
-    this.disableLinkPreview = true;
   }
 
   protected override renderText(): string {
-    return this.render(this.rich);
+    return this.render();
   }
 
   protected override async createMessage(text: string): Promise<number> {
-    if (this.rich) {
-      try {
-        const message = await this.port.sendRich(this.chatId, text, {
-          disableWebPreview: true,
-          threadId: this.threadId,
-        });
-        return message.id;
-      } catch (err) {
-        if (!this.canDegrade(err)) {
-          throw err;
-        }
-        this.degrade(err);
-      }
-    }
-    const message = await this.port.sendText(this.chatId, this.render(false), {
-      disableWebPreview: true,
-      threadId: this.threadId,
-    });
+    const message = await this.port.sendRich(this.chatId, text, { threadId: this.threadId });
     return message.id;
-  }
-
-  protected override async editMessage(text: string): Promise<void> {
-    if (this.rich) {
-      try {
-        await this.port.editRich(this.chatId, this.messageId!, text, { disableWebPreview: true });
-        return;
-      } catch (err) {
-        if (!this.canDegrade(err)) {
-          throw err;
-        }
-        this.degrade(err);
-      }
-    }
-    await super.editMessage(this.render(false));
   }
 
   protected override onMessageCreated(messageId: number): void {
@@ -262,19 +208,6 @@ export class TrackerStatusMessage extends MessageEditor {
       return;
     }
     void this.recreate(text);
-  }
-
-  private canDegrade(err: unknown): boolean {
-    if (!tl.RpcError.is(err)) {
-      return false;
-    }
-    const code = classifyTelegramError(err);
-    return code !== "message_id_invalid" && code !== "message_not_modified";
-  }
-
-  private degrade(err: unknown): void {
-    this.rich = false;
-    logger.warn("[Tracker] Rich-сообщение недоступно, переключаюсь на обычный текст:", err);
   }
 
   private async recreate(text: string): Promise<void> {

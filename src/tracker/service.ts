@@ -202,16 +202,6 @@ export class TrackerService {
   }
 
   private async editStatus(state: TrackerSessionState): Promise<void> {
-    try {
-      await this.deps.telegram.editRich(state.chatId, state.messageId!, buildTrackerMessage(state), {
-        disableWebPreview: true,
-      });
-      return;
-    } catch (err) {
-      logger.warn("[Tracker] Rich-правка не удалась, пробую обычный текст:", err);
-    }
-    await this.deps.telegram.editMessage(state.chatId, state.messageId!, buildTrackerMessage(state, false), {
-      disableWebPreview: true,
-    });
+    await this.deps.telegram.editRich(state.chatId, state.messageId!, buildTrackerMessage(state));
   }
 }
