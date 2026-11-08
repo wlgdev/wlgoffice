@@ -9,6 +9,7 @@ import {
   setChannel,
   setChat,
   setEnabled,
+  setVocabulary,
   TrackerSettingsError,
 } from "../../src/tracker/settings";
 import type { TrackerSettings } from "../../src/tracker/types";
@@ -102,15 +103,76 @@ describe("tracker settings", () => {
     expect(description).toContain("ggsel");
   });
 
-  test("описание настроек: средние тире, паттерны алиаса списком", () => {
+  test("описание настроек: сводка, карточка канала и паттерны списком", () => {
     const settings = setAlias(setChannel({ channels: {} }, "welovegames", -100123), "welovegames", "ggsel", [
       "ggsel",
       "джи джи сел",
     ]);
     const description = describeSettings(settings);
 
-    expect(description).toContain("<b>welovegames</b> – ✅ включён · чат <code>-100123</code>");
-    expect(description).toContain("<b>ggsel</b> (2) – ggsel, джи джи сел");
-    expect(description).not.toContain("—");
+    expect(description).toContain("<p>Каналов: <b>1</b> · включено: <b>1</b> · алиасов: <b>1</b></p>");
+    expect(description).toContain("<details open><summary>✅ <b>welovegames</b> · чат <code>-100123</code></summary>");
+    expect(description).toContain("<li><b>ggsel</b> (2) · ggsel, джи джи сел</li>");
+  });
+
+  test("описание настроек: канал без алиасов и выключенный канал", () => {
+    const settings = setEnabled(setChannel({ channels: {} }, "welovegames"), "welovegames", false);
+    const description = describeSettings(settings);
+
+    expect(description).toContain("<details open><summary>⏸️ <b>welovegames</b> · чат по умолчанию</summary>");
+    expect(description).toContain("<p>Алиасов нет</p>");
+  });
+
+  test("описание настроек: все паттерны алиаса выводятся", () => {
+    const patterns = Array.from({ length: 24 }, (_, index) => `паттерн-${index}`);
+    const settings = setAlias(setChannel({ channels: {} }, "welovegames"), "welovegames", "ggsel", patterns);
+    const description = describeSettings(settings);
+
+    expect(description).toContain("паттерн-23");
+    expect(description).not.toContain("…+");
+    expect(description.match(/паттерн-/g)).toHaveLength(24);
+  });
+
+  test("описание настроек: между сводкой и карточками пустая строка", () => {
+    const settings = setChannel({ channels: {} }, "welovegames");
+    const description = describeSettings(settings);
+
+    expect(description).toContain("</p><p><br></p><details open>");
+  });
+
+  test("описание настроек: первый канал раскрыт, остальные свёрнуты", () => {
+    const settings = setChannel(setChannel({ channels: {} }, "welovegames"), "tabula");
+    const description = describeSettings(settings);
+
+    expect(description).toContain("<details open><summary>✅ <b>welovegames</b>");
+    expect(description).toContain("<details><summary>✅ <b>tabula</b>");
+  });
+
+  test("описание настроек: словарь вынесен в футер", () => {
+    const settings = setChannel({ channels: {} }, "welovegames");
+
+    expect(describeSettings(settings)).toContain("<footer>Словарь алиасов для Gemini: <b>выключен</b></footer>");
+  });
+
+  test("словарь алиасов: по умолчанию выключен, включается глобально", () => {
+    expect(normalizeTrackerSettings({ channels: {} }).vocabularyEnabled).toBe(false);
+    expect(normalizeTrackerSettings({ channels: {}, vocabularyEnabled: true }).vocabularyEnabled).toBe(true);
+    expect(normalizeTrackerSettings({ channels: {}, vocabularyEnabled: false }).vocabularyEnabled).toBe(false);
+
+    const settings = setVocabulary(setChannel({ channels: {} }, "welovegames"), true);
+
+    expect(settings.vocabularyEnabled).toBe(true);
+    expect(describeSettings(settings)).toContain("Словарь алиасов для Gemini: <b>включён</b>");
+  });
+
+  test("смена настроек канала не сбрасывает переключатель словаря", () => {
+    const settings = setAlias(
+      setVocabulary(setChannel({ channels: {} }, "welovegames"), false),
+      "welovegames",
+      "ggsel",
+      ["ggsel"],
+    );
+
+    expect(settings.vocabularyEnabled).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import { formatTwitchTime, humanizeDuration } from "../core/utils";
-import { buildListBlock, escapeHtml } from "../telegram/formatters";
+import { buildTable, escapeHtml } from "../telegram/formatters";
 import { type MessageEditError, MessageEditor, type TelegramMessagePort } from "../telegram/message-editor";
 import type { TrackerHit, TrackerSessionState } from "./types";
 
@@ -8,6 +8,7 @@ const CHANNEL_BASE_URL = "https://www.twitch.tv/";
 const MAX_RICH_LENGTH = 32000;
 const MAX_RICH_BLOCKS = 500;
 const MAX_LIST_ITEMS = MAX_RICH_BLOCKS - 5;
+const MAX_VOCABULARY_ITEMS = 10;
 const BYTE_UNITS = ["Б", "КБ", "МБ", "ГБ"];
 
 export function formatTimestamp(totalSec: number): string {
@@ -159,18 +160,27 @@ export function buildTrackerMessage(state: TrackerSessionState): string {
   return `${header}${body}${footer}`;
 }
 
-export function buildSessionsMessage(states: TrackerSessionState[]): string {
-  if (!states.length) {
-    return "";
-  }
+export function buildSessionTable(state: TrackerSessionState): string {
+  const streamStart = state.startTimeMs ?? state.startedAt;
+  const uptime = humanizeDuration(Date.now() - state.startedAt);
+  const languages = state.languageCodes?.length ? state.languageCodes.join(", ") : "—";
+  const vocabulary = state.customVocabulary ?? [];
+  const shown = vocabulary.slice(0, MAX_VOCABULARY_ITEMS);
+  const vocabText =
+    state.vocabularyEnabled === true
+      ? shown.length
+        ? `${shown.map(escapeHtml).join(", ")}${vocabulary.length > shown.length ? `, …+${vocabulary.length - shown.length}` : ""}`
+        : "—"
+      : "выключен";
 
-  const items = states.map((state) => {
-    const streamStart = state.startTimeMs ?? state.startedAt;
-    const uptime = humanizeDuration(Date.now() - state.startedAt);
-    return `<b>@${escapeHtml(state.channel)}</b> — эфир <code>${escapeHtml(state.broadcastId)}</code><br>эфир с ${formatDate(streamStart)} ${formatTime(streamStart)} · сессия ${uptime} (с ${formatTime(state.startedAt)}) · в Gemini: ${formatBytes(state.sentBytes)} · символов: ${formatCharCount(state.receivedChars)}`;
-  });
-
-  return `<h4>Активные сессии</h4>${buildListBlock(items)}`;
+  return buildTable(`@${escapeHtml(state.channel)} · эфир ${escapeHtml(state.broadcastId)}`, [
+    ["<b>Эфир с</b>", `${formatDate(streamStart)} ${formatTime(streamStart)}`],
+    ["<b>Сессия</b>", `${uptime} (с ${formatTime(state.startedAt)})`],
+    ["<b>В Gemini</b>", formatBytes(state.sentBytes)],
+    ["<b>Символов</b>", formatCharCount(state.receivedChars)],
+    ["<b>Языки</b>", escapeHtml(languages)],
+    ["<b>Словарь</b>", escapeHtml(vocabText)],
+  ]);
 }
 
 /**

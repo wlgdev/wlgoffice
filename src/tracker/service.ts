@@ -80,10 +80,11 @@ export class TrackerService {
       const session = this.sessions.get(channel);
       if (session) {
         session.updateAliases(channelSettings.aliases);
+        session.updateVocabulary(settings.vocabularyEnabled === true);
         continue;
       }
 
-      await this.startSession(channel, channelSettings);
+      await this.startSession(channel, channelSettings, settings.vocabularyEnabled === true);
     }
 
     for (const channel of [...this.sessions.keys()]) {
@@ -99,7 +100,11 @@ export class TrackerService {
     }
   }
 
-  private async startSession(channel: string, channelSettings: TrackerChannelSettings): Promise<void> {
+  private async startSession(
+    channel: string,
+    channelSettings: TrackerChannelSettings,
+    vocabularyEnabled: boolean,
+  ): Promise<void> {
     let info: TrackerStreamInfo;
     try {
       info = await this.deps.twitch.streamInfo(channel);
@@ -136,6 +141,7 @@ export class TrackerService {
       chatId: resume?.chatId ?? channelSettings.chatId ?? this.deps.defaultChatId,
       threadId: resume?.threadId ?? channelSettings.threadId ?? this.deps.defaultThreadId,
       aliases: channelSettings.aliases,
+      vocabularyEnabled,
       messageId: resume?.messageId,
       vodId: resume?.vodId,
       vodTitle: resume?.vodTitle ?? info.title,

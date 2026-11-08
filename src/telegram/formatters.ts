@@ -24,6 +24,11 @@ export function buildNoticeBlock(params: { icon: string; title: string; body: st
   return parts.join("");
 }
 
+export function buildTable(title: string, rows: string[][]): string {
+  const body = rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("");
+  return `<table compact striped><caption>${title}</caption>${body}</table>`;
+}
+
 export function buildRequesterLine(interop: InteropPayload | null): string {
   if (!interop) {
     return "";

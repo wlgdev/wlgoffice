@@ -15,6 +15,7 @@ export class DB {
   private stmtGet: Statement<KvRow, [string]>;
   private stmtSet: Statement<unknown, [string, string]>;
   private stmtDelete: Statement<unknown, [string]>;
+  private stmtDeleteOlderThan: Statement<unknown, [string, string]>;
 
   constructor(dbPath: string = "db/db.sqlite") {
     const dir = dirname(dbPath);
@@ -34,6 +35,9 @@ export class DB {
             updated_at = excluded.updated_at
     `);
     this.stmtDelete = this.db.prepare<unknown, [string]>(`DELETE FROM kv WHERE key = ?`);
+    this.stmtDeleteOlderThan = this.db.prepare<unknown, [string, string]>(
+      `DELETE FROM kv WHERE key LIKE ? AND updated_at < ?`,
+    );
   }
 
   public migrate(): void {
@@ -61,6 +65,10 @@ export class DB {
 
   public delete(key: string): boolean {
     return this.stmtDelete.run(key).changes > 0;
+  }
+
+  public deleteOlderThan(prefix: string, isoBefore: string): number {
+    return this.stmtDeleteOlderThan.run(`${prefix}%`, isoBefore).changes;
   }
 
   public getJson<T>(key: string): T | null {

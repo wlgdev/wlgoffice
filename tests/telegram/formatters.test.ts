@@ -11,6 +11,7 @@ import {
   buildNoticeBlock,
   buildRequesterLine,
   buildStageLine,
+  buildTable,
   escapeHtml,
   formatDuration,
   formatMuteLine,
@@ -49,6 +50,22 @@ describe("telegram formatters", () => {
       });
 
       expect(notice).toContain("<p>› 🔗 <b>Инициировано из:</b> <b>twitch</b></p>");
+    });
+  });
+
+  describe("buildTable", () => {
+    test("собирает compact-таблицу с подписью и строками", () => {
+      const table = buildTable("Память", [
+        ["<b>rss</b>", "128 МБ"],
+        ["<b>heap used</b>", "42 МБ"],
+      ]);
+
+      expect(table).toBe(
+        "<table compact striped><caption>Память</caption>" +
+          "<tr><td><b>rss</b></td><td>128 МБ</td></tr>" +
+          "<tr><td><b>heap used</b></td><td>42 МБ</td></tr>" +
+          "</table>",
+      );
     });
   });
 

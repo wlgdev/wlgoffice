@@ -9,6 +9,8 @@ export interface TrackerChannelSettings {
 
 export interface TrackerSettings {
   channels: Record<string, TrackerChannelSettings>;
+  /** Отправлять имена алиасов в Gemini как custom vocabulary (по умолчанию выключено). */
+  vocabularyEnabled?: boolean;
 }
 
 export interface TrackerHit {
@@ -33,6 +35,12 @@ export interface TrackerSessionState {
   receivedChars: number;
   startedAt: number;
   startTimeMs?: number;
+  /** Языки распознавания, заданные при подключении к Gemini. */
+  languageCodes?: string[];
+  /** Кастомный словарь: имена алиасов, отданные Gemini как подсказки распознавания. */
+  customVocabulary?: string[];
+  /** Отправляются ли алиасы в Gemini как словарь. */
+  vocabularyEnabled?: boolean;
   updatedAt: number;
   status: TrackerSessionStatus;
 }
@@ -60,6 +68,8 @@ export interface TrackerTranscriberOptions {
   systemInstruction?: string;
   streamStartEpochMs?: number;
   staleTimeoutMs?: number;
+  languageCodes?: string[];
+  customVocabulary?: string[];
   onAudioSent?: (bytes: number) => void;
 }
 

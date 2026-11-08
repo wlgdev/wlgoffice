@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { formatTwitchTime } from "../../src/core/utils";
 import {
-  buildSessionsMessage,
+  buildSessionTable,
   buildTrackerMessage,
   formatBytes,
   formatCharCount,
@@ -176,12 +176,8 @@ describe("tracker message", () => {
     expect(formatCharCount(45678)).toBe("45.7 тыс.");
   });
 
-  test("сводка активных сессий: без сессий пустая", () => {
-    expect(buildSessionsMessage([])).toBe("");
-  });
-
-  test("сводка активных сессий: канал, эфир, расход и символы", () => {
-    const text = buildSessionsMessage([
+  test("таблица активной сессии: канал, эфир, расход и символы", () => {
+    const text = buildSessionTable(
       state({
         broadcastId: "123456789",
         sentBytes: 12 * 1024 * 1024,
@@ -189,14 +185,37 @@ describe("tracker message", () => {
         startedAt: Date.now() - 3_600_000,
         startTimeMs: new Date(2026, 10, 1, 14, 23).getTime(),
       }),
-    ]);
+    );
 
-    expect(text).toContain("<h4>Активные сессии</h4>");
-    expect(text).toContain("<b>@welovegames</b>");
-    expect(text).toContain("<code>123456789</code>");
+    expect(text).toContain("<table compact striped>");
+    expect(text).toContain("<caption>@welovegames · эфир 123456789</caption>");
     expect(text).toContain("01.11.2026 14:23");
     expect(text).toContain("1ч");
     expect(text).toContain("12.0 МБ");
     expect(text).toContain("4.6 тыс.");
+  });
+
+  test("таблица активной сессии: языки и кастомный словарь", () => {
+    const text = buildSessionTable(
+      state({ languageCodes: ["ru-RU", "en-US"], customVocabulary: ["ggsel", "gg"], vocabularyEnabled: true }),
+    );
+
+    expect(text).toContain("<b>Языки</b>");
+    expect(text).toContain("ru-RU, en-US");
+    expect(text).toContain("<b>Словарь</b>");
+    expect(text).toContain("ggsel, gg");
+  });
+
+  test("таблица активной сессии: без словаря и языков показываются прочерки", () => {
+    const text = buildSessionTable(state({ vocabularyEnabled: true }));
+
+    expect(text).toContain("<td>—</td>");
+  });
+
+  test("таблица активной сессии: выключенный словарь", () => {
+    const text = buildSessionTable(state({ vocabularyEnabled: false }));
+
+    expect(text).toContain("<b>Словарь</b>");
+    expect(text).toContain("выключен");
   });
 });

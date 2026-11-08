@@ -37,12 +37,15 @@ export type RemoveItemResult = "removed" | "empty" | "missing" | "unchanged" | "
 
 const liveJobs = new Map<string, MediaJobMessage>();
 
+const SNAPSHOT_KEY_PREFIX = "mediajob:";
+const SNAPSHOT_TTL_DAYS = 30;
+
 function liveKey(chatId: number | string, messageId: number): string {
   return `${chatId}:${messageId}`;
 }
 
 function snapshotKey(chatId: number | string, messageId: number): string {
-  return `mediajob:${chatId}:${messageId}`;
+  return `${SNAPSHOT_KEY_PREFIX}${chatId}:${messageId}`;
 }
 
 function describeError(err: unknown): string {
@@ -425,4 +428,32 @@ export async function removeMediaJobItem(params: {
 
   const detached = new MediaJobMessage(params.port, params.chatId, params.messageId, snapshot, params.db);
   return await detached.removeItem(params.itemId);
+}
+
+/**
+ * Удаляет снапшоты медиа-задач, которые не обновлялись дольше TTL.
+ */
+export function purgeExpiredMediaJobs(db: DB, now: number = Date.now()): number {
+  const cutoff = new Date(now - SNAPSHOT_TTL_DAYS * 86400_000).toISOString();
+  return db.deleteOlderThan(SNAPSHOT_KEY_PREFIX, cutoff);
+}
+
+/**
+ * Ежедневно чистит старые снапшоты медиа-задач (по московскому времени).
+ */
+export function startMediaJobCleanup(db: DB): void {
+  Bun.cron(
+    "0 5 * * *",
+    () => {
+      try {
+        const removed = purgeExpiredMediaJobs(db);
+        if (removed > 0) {
+          logger.info(`[MediaJob] Удалено старых записей: ${removed}`);
+        }
+      } catch (err) {
+        logger.warn("[MediaJob] Не удалось удалить старые записи:", err);
+      }
+    },
+    { tz: "Europe/Moscow" },
+  );
 }

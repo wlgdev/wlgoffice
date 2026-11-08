@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { type MediaJobSnapshot, renderMediaJob } from "../../src/telegram/media-job";
+import { DB } from "../../src/services/db";
+import { type MediaJobSnapshot, purgeExpiredMediaJobs, renderMediaJob } from "../../src/telegram/media-job";
 
 function block(itemId: number): string {
   return (
@@ -73,5 +74,23 @@ describe("media job rendering", () => {
 
     expect(html).toContain("del:media:1");
     expect(Object.keys(attachments)).toHaveLength(0);
+  });
+});
+
+describe("очистка старых медиа-задач", () => {
+  test("удаляет записи старше TTL и не трогает чужие ключи", () => {
+    const db = new DB(":memory:");
+
+    db.set("mediajob:1:2", "snapshot");
+    db.set("tracker:session:abc", "session");
+
+    expect(purgeExpiredMediaJobs(db)).toBe(0);
+    expect(db.get("mediajob:1:2")).toBe("snapshot");
+
+    expect(purgeExpiredMediaJobs(db, Date.now() + 31 * 86400_000)).toBe(1);
+    expect(db.get("mediajob:1:2")).toBeNull();
+    expect(db.get("tracker:session:abc")).toBe("session");
+
+    db.close();
   });
 });

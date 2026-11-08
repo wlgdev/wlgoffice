@@ -17,6 +17,8 @@ export type TrackerSessionEnd = "ended" | "stopped" | "superseded" | "unknown";
 
 const MAX_STORED_HITS = 500;
 const VOD_LOOKUP_INTERVAL_MS = 60_000;
+/** Языки распознавания, которые трекер просит у Gemini. */
+const TRACKER_LANGUAGE_CODES = ["ru-RU", "en-US"];
 
 export interface LiveSessionDeps {
   twitch: TwitchTrackerPort;
@@ -44,6 +46,8 @@ export interface LiveSessionOptions {
   chatId: number | string;
   threadId?: number;
   aliases: Record<string, string[]>;
+  /** Отправлять ли имена алиасов в Gemini как custom vocabulary (по умолчанию выключено). */
+  vocabularyEnabled?: boolean;
   messageId?: number;
   vodId?: string;
   vodTitle?: string;
@@ -79,12 +83,18 @@ export class LiveSession {
   private sentBytes: number;
   private receivedChars: number;
   private pinnedMessageId?: number;
+  /** Имена алиасов: уходят в Gemini как кастомный словарь. */
+  private aliasNames: string[];
+  /** Отправлять ли имена алиасов в Gemini как кастомный словарь. */
+  private vocabularyEnabled: boolean;
 
   constructor(
     private readonly deps: LiveSessionDeps,
     private readonly opts: LiveSessionOptions,
   ) {
     this.matcher = new TrackerMatcher(opts.aliases, { dedupeWindowSec: deps.dedupeWindowSec });
+    this.aliasNames = Object.keys(opts.aliases);
+    this.vocabularyEnabled = opts.vocabularyEnabled === true;
     this.hits = opts.hits ?? [];
     this.counts = { ...(opts.counts ?? {}) };
     this.sentBytes = opts.sentBytes ?? 0;
@@ -110,6 +120,20 @@ export class LiveSession {
 
   updateAliases(aliases: Record<string, string[]>): void {
     this.matcher.setAliases(aliases);
+    this.aliasNames = Object.keys(aliases);
+  }
+
+  /**
+   * Включает или выключает отправку алиасов в Gemini как custom vocabulary.
+   * Словарь задаётся при подключении к Gemini, поэтому включение и выключение
+   * требует переподключения: текущий транскрайбер останавливается.
+   */
+  updateVocabulary(enabled: boolean): void {
+    if (this.vocabularyEnabled === enabled) {
+      return;
+    }
+    this.vocabularyEnabled = enabled;
+    this.transcriber?.stop();
   }
 
   stop(): void {
@@ -209,6 +233,8 @@ export class LiveSession {
         geminiApiKey: this.deps.geminiApiKey,
         streamStartEpochMs: this.opts.startTimeMs,
         staleTimeoutMs: this.deps.staleTimeoutMs,
+        languageCodes: TRACKER_LANGUAGE_CODES,
+        customVocabulary: this.vocabularyEnabled ? this.aliasNames : undefined,
         onAudioSent: (bytes) => {
           this.sentBytes += bytes;
         },
@@ -413,6 +439,9 @@ export class LiveSession {
       receivedChars: this.receivedChars,
       startedAt: this.startedAt,
       startTimeMs: this.opts.startTimeMs,
+      languageCodes: TRACKER_LANGUAGE_CODES,
+      customVocabulary: this.vocabularyEnabled ? this.aliasNames : [],
+      vocabularyEnabled: this.vocabularyEnabled,
       updatedAt: Date.now(),
       status: this.status,
     };

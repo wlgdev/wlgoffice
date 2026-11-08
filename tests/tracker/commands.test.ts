@@ -67,6 +67,19 @@ describe("tracker commands", () => {
     expect(removed.channels.welovegames).toBeUndefined();
   });
 
+  test("словарь алиасов включается и выключается", () => {
+    const off = run("vocab off");
+    expect(off.vocabularyEnabled).toBe(false);
+
+    const on = applyCommand(off, "vocab", "on", ["on"]);
+    expect(on.vocabularyEnabled).toBe(true);
+  });
+
+  test("словарь алиасов: неизвестный режим даёт ошибку", () => {
+    expect(() => run("vocab maybe")).toThrow(TrackerSettingsError);
+    expect(() => run("vocab")).toThrow(TrackerSettingsError);
+  });
+
   test("неизвестная команда и неизвестный канал дают ошибку", () => {
     expect(() => run("что-то")).toThrow(TrackerSettingsError);
     expect(() => withChannel("alias unknownchannel ggsel ggsel")).toThrow(TrackerSettingsError);

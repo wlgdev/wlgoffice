@@ -17,7 +17,7 @@ export class TrackerSettingsError extends Error {
 }
 
 export function emptyTrackerSettings(): TrackerSettings {
-  return { channels: {} };
+  return { channels: {}, vocabularyEnabled: false };
 }
 
 export function normalizeChatTarget(value: unknown): { chatId?: number | string; threadId?: number } {
@@ -139,7 +139,10 @@ export function normalizeTrackerSettings(raw: unknown): TrackerSettings {
     return settings;
   }
 
-  const channels = (raw as { channels?: unknown }).channels;
+  const source = raw as { channels?: unknown; vocabularyEnabled?: unknown };
+  settings.vocabularyEnabled = source.vocabularyEnabled === true;
+
+  const channels = source.channels;
   if (!channels || typeof channels !== "object") {
     return settings;
   }
@@ -165,7 +168,7 @@ function requireChannel(settings: TrackerSettings, login: string): TrackerChanne
 
 export function setChannel(settings: TrackerSettings, login: string, chatId?: number | string): TrackerSettings {
   const key = normalizeLogin(login);
-  const next: TrackerSettings = { channels: { ...settings.channels } };
+  const next: TrackerSettings = { ...settings, channels: { ...settings.channels } };
   const existing = next.channels[key];
   const target = chatId === undefined ? {} : normalizeChatTarget(chatId);
 
@@ -182,7 +185,7 @@ export function setChannel(settings: TrackerSettings, login: string, chatId?: nu
 export function setEnabled(settings: TrackerSettings, login: string, enabled: boolean): TrackerSettings {
   const key = normalizeLogin(login);
   const channel = requireChannel(settings, key);
-  return { channels: { ...settings.channels, [key]: { ...channel, enabled } } };
+  return { ...settings, channels: { ...settings.channels, [key]: { ...channel, enabled } } };
 }
 
 export function setChat(settings: TrackerSettings, login: string, chatId?: number | string): TrackerSettings {
@@ -190,6 +193,7 @@ export function setChat(settings: TrackerSettings, login: string, chatId?: numbe
   const channel = requireChannel(settings, key);
   const target = normalizeChatTarget(chatId);
   return {
+    ...settings,
     channels: { ...settings.channels, [key]: { ...channel, chatId: target.chatId, threadId: target.threadId } },
   };
 }
@@ -199,7 +203,14 @@ export function removeChannel(settings: TrackerSettings, login: string): Tracker
   requireChannel(settings, key);
   const channels = { ...settings.channels };
   delete channels[key];
-  return { channels };
+  return { ...settings, channels };
+}
+
+/**
+ * Включает или выключает отправку имён алиасов в Gemini как custom vocabulary.
+ */
+export function setVocabulary(settings: TrackerSettings, enabled: boolean): TrackerSettings {
+  return { ...settings, vocabularyEnabled: enabled };
 }
 
 /**
@@ -218,35 +229,47 @@ export function setAlias(settings: TrackerSettings, login: string, alias: string
     aliases[name] = list;
   }
 
-  return { channels: { ...settings.channels, [key]: { ...channel, aliases } } };
+  return { ...settings, channels: { ...settings.channels, [key]: { ...channel, aliases } } };
 }
 
+function describeChannel(login: string, channel: TrackerChannelSettings, open: boolean): string {
+  const icon = channel.enabled ? "✅" : "⏸️";
+  const target =
+    channel.chatId === undefined
+      ? "чат по умолчанию"
+      : channel.threadId === undefined
+        ? `чат <code>${escapeHtml(String(channel.chatId))}</code>`
+        : `чат <code>${escapeHtml(`${channel.chatId}_${channel.threadId}`)}</code>`;
+
+  const aliases = Object.entries(channel.aliases);
+  const body = aliases.length
+    ? buildListBlock(
+        aliases.map(
+          ([alias, patterns]) =>
+            `<b>${escapeHtml(alias)}</b> (${patterns.length}) · ${patterns.map(escapeHtml).join(", ")}`,
+        ),
+      )
+    : "<p>Алиасов нет</p>";
+
+  return `<details${open ? " open" : ""}><summary>${icon} <b>${escapeHtml(login)}</b> · ${target}</summary>${body}</details>`;
+}
+
+/**
+ * Описывает настройки трекера: сводка, карточка на канал и футер с общим словарём.
+ */
 export function describeSettings(settings: TrackerSettings): string {
   const channels = Object.entries(settings.channels);
+  const vocabulary = settings.vocabularyEnabled === true ? "включён" : "выключен";
+  const footer = `<footer>Словарь алиасов для Gemini: <b>${vocabulary}</b></footer>`;
+
   if (!channels.length) {
-    return "<p>Настроенных каналов нет. Добавь: <code>!tracker channel welovegames</code></p>";
+    return `<p>Настроенных каналов нет. Добавь: <code>!tracker channel welovegames</code></p>${footer}`;
   }
 
-  const items = channels.map(([login, channel]) => {
-    const status = channel.enabled ? "✅ включён" : "⏸️ выключен";
-    const chat =
-      channel.chatId === undefined
-        ? "по умолчанию"
-        : channel.threadId === undefined
-          ? String(channel.chatId)
-          : `${channel.chatId}_${channel.threadId}`;
-    const aliases = Object.entries(channel.aliases);
-    const aliasLines = aliases.length
-      ? aliases
-          .map(
-            ([alias, patterns]) =>
-              `<b>${escapeHtml(alias)}</b> (${patterns.length}) – ${patterns.map(escapeHtml).join(", ")}`,
-          )
-          .join("<br>")
-      : "• алиасов нет";
+  const enabled = channels.filter(([, channel]) => channel.enabled).length;
+  const aliases = channels.reduce((sum, [, channel]) => sum + Object.keys(channel.aliases).length, 0);
+  const summary = `<p>Каналов: <b>${channels.length}</b> · включено: <b>${enabled}</b> · алиасов: <b>${aliases}</b></p>`;
+  const cards = channels.map(([login, channel], index) => describeChannel(login, channel, index === 0));
 
-    return `<b>${escapeHtml(login)}</b> – ${status} · чат <code>${escapeHtml(String(chat))}</code><br>${aliasLines}`;
-  });
-
-  return buildListBlock(items);
+  return [summary, "<p><br></p>", ...cards, footer].join("");
 }

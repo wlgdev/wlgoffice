@@ -116,7 +116,9 @@ describe("tracker handler", () => {
     expect(tg.sent[0]!.chatId).toBe(chatId);
     expect(tg.sent[0]!.text).toContain("welovegames");
     expect(tg.sent[0]!.text).toContain("<h3>");
-    expect(tg.sent[0]!.text).toContain("<ul>");
+    expect(tg.sent[0]!.text).toContain("<details open>");
+    expect(tg.sent[0]!.text).toContain("<summary>");
+    expect(tg.sent[0]!.text).toContain("Каналов: <b>1</b>");
   });
 
   test("!tracker без аргументов показывает справку", async () => {
@@ -127,7 +129,7 @@ describe("tracker handler", () => {
     await handleTrackerMessage({ text: "!tracker ", chat: { id: chatId } }, tg, service);
 
     expect(tg.sent).toHaveLength(1);
-    expect(tg.sent[0]!.text).toContain("!tracker list");
+    expect(tg.sent[0]!.text).toContain("<code>!tracker list</code>");
     expect(tg.sent[0]!.text).toContain("<ul>");
   });
 
@@ -142,7 +144,7 @@ describe("tracker handler", () => {
     expect(tg.sent[0]!.text).toContain("Ошибка");
   });
 
-  test("!tracker list показывает активные сессии", async () => {
+  test("!tracker list больше не показывает активные сессии", async () => {
     const service = await createServiceWithSession();
     const tg = new FakeTg();
     const chatId = config.telegram.chatIds[0]!;
@@ -150,8 +152,47 @@ describe("tracker handler", () => {
     await handleTrackerMessage({ text: "!tracker list", chat: { id: chatId } }, tg, service);
 
     expect(tg.sent).toHaveLength(1);
-    expect(tg.sent[0]!.text).toContain("Активные сессии");
-    expect(tg.sent[0]!.text).toContain("@welovegames");
-    expect(tg.sent[0]!.text).toContain("в Gemini:");
+    expect(tg.sent[0]!.text).not.toContain("Активные сессии");
+    expect(tg.sent[0]!.text).not.toContain("в Gemini:");
+    expect(tg.sent[0]!.text).toContain("welovegames");
+  });
+
+  test("!tracker vocab on|off переключает словарь алиасов", async () => {
+    const service = createService();
+    const tg = new FakeTg();
+    const chatId = config.telegram.chatIds[0]!;
+
+    await handleTrackerMessage({ text: "!tracker vocab on", chat: { id: chatId } }, tg, service);
+
+    expect(service.getSettings().vocabularyEnabled).toBe(true);
+    expect(tg.sent[0]!.text).toContain("Словарь алиасов для Gemini: <b>включён</b>");
+
+    await handleTrackerMessage({ text: "!tracker vocab off", chat: { id: chatId } }, tg, service);
+
+    expect(service.getSettings().vocabularyEnabled).toBe(false);
+    expect(tg.sent[1]!.text).toContain("Словарь алиасов для Gemini: <b>выключен</b>");
+  });
+
+  test("после команды — короткий итог и обновлённый список", async () => {
+    const service = createService();
+    const tg = new FakeTg();
+    const chatId = config.telegram.chatIds[0]!;
+
+    await handleTrackerMessage({ text: "!tracker disable welovegames", chat: { id: chatId } }, tg, service);
+
+    expect(tg.sent[0]!.text).toContain("<h3>✅ Готово</h3>");
+    expect(tg.sent[0]!.text).toContain("<p>Канал <b>welovegames</b> выключен</p>");
+    expect(tg.sent[0]!.text).toContain("<details open>");
+  });
+
+  test("!tracker export прячет JSON в details", async () => {
+    const service = createService();
+    const tg = new FakeTg();
+    const chatId = config.telegram.chatIds[0]!;
+
+    await handleTrackerMessage({ text: "!tracker export", chat: { id: chatId } }, tg, service);
+
+    expect(tg.sent[0]!.text).toContain("<summary>Настройки в JSON</summary>");
+    expect(tg.sent[0]!.text).toContain("<pre><code>");
   });
 });

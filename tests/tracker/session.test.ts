@@ -366,6 +366,68 @@ describe("tracker session", () => {
     await run;
   });
 
+  test("в Gemini уходят языки и словарь из имён алиасов", async () => {
+    const { session, created } = createHarness(
+      {},
+      { aliases: { ggsel: ["ggsel"], gg: ["гг"] }, vocabularyEnabled: true },
+    );
+    const run = session.run();
+
+    await waitFor(() => created.length === 1);
+
+    expect(created[0]!.options.languageCodes).toEqual(["ru-RU", "en-US"]);
+    expect(created[0]!.options.customVocabulary).toEqual(["ggsel", "gg"]);
+    expect(session.state().languageCodes).toEqual(["ru-RU", "en-US"]);
+    expect(session.state().customVocabulary).toEqual(["ggsel", "gg"]);
+
+    session.stop();
+    await run;
+  });
+
+  test("по умолчанию словарь в Gemini не отправляется", async () => {
+    const { session, created } = createHarness();
+    const run = session.run();
+
+    await waitFor(() => created.length === 1);
+
+    expect(created[0]!.options.customVocabulary).toBeUndefined();
+    expect(session.state().vocabularyEnabled).toBe(false);
+    expect(session.state().customVocabulary).toEqual([]);
+
+    session.stop();
+    await run;
+  });
+
+  test("выключенный словарь не уходит в Gemini", async () => {
+    const { session, created } = createHarness({}, { vocabularyEnabled: false });
+    const run = session.run();
+
+    await waitFor(() => created.length === 1);
+
+    expect(created[0]!.options.customVocabulary).toBeUndefined();
+    expect(session.state().vocabularyEnabled).toBe(false);
+    expect(session.state().customVocabulary).toEqual([]);
+
+    session.stop();
+    await run;
+  });
+
+  test("переключение словаря переподключает Gemini", async () => {
+    const { session, created } = createHarness({}, { vocabularyEnabled: true });
+    const run = session.run();
+
+    await waitFor(() => created.length === 1);
+    expect(created[0]!.options.customVocabulary).toEqual(["ggsel"]);
+
+    session.updateVocabulary(false);
+    await waitFor(() => created.length === 2);
+
+    expect(created[1]!.options.customVocabulary).toBeUndefined();
+
+    session.stop();
+    await run;
+  });
+
   test("статус закрепляется при первом совпадении и открепляется по окончании эфира", async () => {
     const { session, telegram, twitch, created } = createHarness();
     const run = session.run();

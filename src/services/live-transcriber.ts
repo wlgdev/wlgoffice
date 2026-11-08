@@ -65,6 +65,10 @@ export interface LiveTranscriberOptions {
   maxSpanSec?: number;
   /** Нижняя граница скорости речи для ограничения отката начала куска, симв/с (по умолчанию 5, 0 = выкл). */
   minCharsPerSec?: number;
+  /** Языки распознавания (BCP-47), например ["ru-RU", "en-US"]. */
+  languageCodes?: string[];
+  /** Кастомный словарь: слова и имена, которые Gemini должен распознавать точнее. */
+  customVocabulary?: string[];
   onAudioSent?: (bytes: number) => void;
 }
 
@@ -179,6 +183,8 @@ export class LiveTranscriber {
         timeout: 30000,
         systemInstruction: this.options.systemInstruction,
         staleTimeout: this.options.staleTimeoutMs,
+        languageCodes: this.options.languageCodes,
+        customVocabulary: this.options.customVocabulary,
       });
       this.session = session;
 

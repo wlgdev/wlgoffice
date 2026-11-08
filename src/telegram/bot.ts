@@ -5,13 +5,16 @@ import config from "../config";
 import { formatChatTarget } from "../core/chat-target";
 import logger from "../logger";
 import { DB } from "../services/db";
+import { setBotIdentity } from "../system";
 import { TrackerService } from "../tracker/service";
 import { TrackerStore } from "../tracker/store";
 import { createLiveTranscriberFactory } from "../tracker/transcriber";
 import { createTwitchTrackerPort } from "../tracker/twitch-port";
 import { setupCallbackHandler } from "./handlers/callback.handler";
 import { setupMessageHandler } from "./handlers/message.handler";
+import { setupSystemHandler } from "./handlers/system.handler";
 import { setupTrackerHandler } from "./handlers/tracker.handler";
+import { startMediaJobCleanup } from "./media-job";
 import { createTelegramPort } from "./telegram-port";
 
 process.on("unhandledRejection", (reason) => {
@@ -58,13 +61,16 @@ dp.onError((err, update) => {
 
 setupCallbackHandler(dp, tg, db);
 setupTrackerHandler(dp, tg, trackerService);
+setupSystemHandler(dp, tg, trackerService);
 setupMessageHandler(dp, tg, db);
+startMediaJobCleanup(db);
 
 export async function startBot(): Promise<void> {
   try {
     const self = await tg.start({
       botToken: config.telegram.botToken,
     });
+    setBotIdentity({ username: self.username });
     logger.log(`🤖 Connected as: @${self.username || self.displayName}`);
     logger.log(`🤖 Chat-IDs: ${config.telegram.targets.map(formatChatTarget).join(", ")}`);
     logger.log(`🤖 Interop chat-IDs: ${config.interop.chatIds.join(", ")}`);

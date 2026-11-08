@@ -4,7 +4,6 @@ import { PropagationAction } from "@mtcute/dispatcher";
 
 import config from "../../config";
 import { resolveChatAccess } from "../../core/chat-target";
-import { buildSessionsMessage } from "../../tracker/message";
 import type { TrackerService } from "../../tracker/service";
 import {
   describeSettings,
@@ -14,6 +13,7 @@ import {
   setChannel,
   setChat,
   setEnabled,
+  setVocabulary,
   TrackerSettingsError,
 } from "../../tracker/settings";
 import type { TrackerSettings } from "../../tracker/types";
@@ -24,15 +24,52 @@ const COMMAND = "!tracker";
 
 const TITLE = "<h3>🔎 Трекер ключевых слов</h3>";
 
-const USAGE = [
-  "<code>!tracker list</code> – текущие настройки",
-  "<code>!tracker channel [login] [chatId]</code> – добавить/включить канал",
-  "<code>!tracker enable|disable [login]</code> – вкл/выкл трекинг",
-  "<code>!tracker chat [login] [chatId|default]</code> – чат статусного сообщения (<code>chatId_тред</code> для форума)",
-  "<code>!tracker alias [login] [alias] [паттерны через запятую]</code> – задать паттерны",
-  "<code>!tracker rm [login]</code> – удалить канал",
-  "<code>!tracker export</code> – настройки в JSON",
+const USAGE: [string, string][] = [
+  ["!tracker list", "текущие настройки"],
+  ["!tracker channel [login] [chatId]", "добавить/включить канал"],
+  ["!tracker enable|disable [login]", "вкл/выкл трекинг"],
+  ["!tracker chat [login] [chatId|default]", "чат статусного сообщения (<code>chatId_тред</code> для форума)"],
+  ["!tracker alias [login] [alias] [паттерны через запятую]", "задать паттерны"],
+  ["!tracker vocab on|off", "передавать алиасы в Gemini как словарь"],
+  ["!tracker rm [login]", "удалить канал"],
+  ["!tracker export", "настройки в JSON"],
 ];
+
+function buildUsage(): string {
+  return buildListBlock(USAGE.map(([command, description]) => `<code>${command}</code> · ${description}`));
+}
+
+/**
+ * Короткий итог применённой команды: одна строка вместо полного списка настроек.
+ */
+export function describeCommandResult(command: string, tokens: string[], settings: TrackerSettings): string {
+  const [login, second] = tokens;
+  const name = escapeHtml(login ?? "");
+  switch (command) {
+    case "channel":
+      return `Канал <b>${name}</b> добавлен и включён`;
+    case "enable":
+      return `Канал <b>${name}</b> включён`;
+    case "disable":
+      return `Канал <b>${name}</b> выключен`;
+    case "chat":
+      return second === undefined || second === "default"
+        ? `Чат канала <b>${name}</b> сброшен на по умолчанию`
+        : `Чат канала <b>${name}</b>: <code>${escapeHtml(second)}</code>`;
+    case "alias": {
+      const kept = settings.channels[login?.toLowerCase() ?? ""]?.aliases[second ?? ""] !== undefined;
+      return kept
+        ? `Алиас <b>${escapeHtml(second ?? "")}</b> обновлён`
+        : `Алиас <b>${escapeHtml(second ?? "")}</b> удалён`;
+    }
+    case "rm":
+      return `Канал <b>${name}</b> удалён`;
+    case "vocab":
+      return `Словарь алиасов для Gemini <b>${settings.vocabularyEnabled ? "включён" : "выключен"}</b>`;
+    default:
+      return "Настройки обновлены";
+  }
+}
 
 export function splitCommand(rest: string): { command: string; args: string; tokens: string[] } {
   const trimmed = rest.trim();
@@ -88,6 +125,13 @@ export function applyCommand(
       }
       return removeChannel(settings, login);
     }
+    case "vocab": {
+      const [mode] = tokens;
+      if (mode !== "on" && mode !== "off") {
+        throw new TrackerSettingsError("Формат: !tracker vocab on|off");
+      }
+      return setVocabulary(settings, mode === "on");
+    }
     default:
       throw new TrackerSettingsError(`Неизвестная команда "${command}"`);
   }
@@ -119,19 +163,19 @@ export async function handleTrackerMessage(
 
   try {
     if (!command) {
-      await send(`${TITLE}${buildListBlock(USAGE)}`);
+      await send(`${TITLE}<p>› Справка: <code>!tracker команда</code></p>${buildUsage()}`);
       return undefined;
     }
 
     if (command === "list") {
       const settings = describeSettings(service.getSettings());
-      const sessions = buildSessionsMessage(service.listActiveSessions());
-      await send(`${TITLE}${settings}${sessions}`);
+      await send(`${TITLE}${settings}`);
       return undefined;
     }
 
     if (command === "export") {
-      await send(`${TITLE}<pre><code>${escapeHtml(JSON.stringify(service.getSettings(), null, 2))}</code></pre>`);
+      const json = escapeHtml(JSON.stringify(service.getSettings(), null, 2));
+      await send(`${TITLE}<details><summary>Настройки в JSON</summary><pre><code>${json}</code></pre></details>`);
       return undefined;
     }
 
@@ -139,7 +183,9 @@ export async function handleTrackerMessage(
     service.saveSettings(settings);
     void service.tick();
 
-    await send(`<h3>✅ Готово</h3>${describeSettings(settings)}`);
+    await send(
+      `<h3>✅ Готово</h3><p>${describeCommandResult(command, tokens, settings)}</p>${describeSettings(settings)}`,
+    );
   } catch (err) {
     const message = err instanceof TrackerSettingsError ? err.message : String(err);
     await send(buildNoticeBlock({ icon: "❌", title: "Ошибка", body: escapeHtml(message) }));
